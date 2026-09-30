@@ -1,0 +1,14 @@
+*.log
+*.db
+node_modules/
+vendor/
+tmp/
+.env
+media/
+tests/front-end-test/test-results/
+logs/
+CLAUDE.md
+docs/
+.DS_Store
+*.swp
+*~

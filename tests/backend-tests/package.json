@@ -1,0 +1,10 @@
+{
+  "name": "simple-social-api",
+  "version": "1.0.0",
+  "description": "Simple Social API Tests",
+  "scripts": {
+    "test": "node test.js",
+    "test:auth": "node test_auth.js"
+  },
+  "devDependencies": {}
+}

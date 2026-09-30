@@ -1,0 +1,23 @@
+{
+    "name": "davidfruin/simple-social",
+    "description": "simple-social backend",
+    "type": "project",
+    "license": "proprietary",
+    "require": {
+        "php": ">=8.1"
+    },
+    "autoload": {
+        "psr-4": {
+            "App\\": "src/"
+        },
+        "files": [
+            "src/Auth/handlers.php",
+            "src/Users/handlers.php",
+            "src/Posts/handlers.php",
+            "src/Comments/handlers.php",
+            "src/Follows/handlers.php",
+            "src/Notifications/handlers.php",
+            "src/Media/handlers.php"
+        ]
+    }
+}
