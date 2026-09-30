@@ -11,7 +11,8 @@ The PHP backend for Simple Social — split out of the [`simple-social`](https:/
 - `config.php` — reads runtime config/secrets from outside the repo (`private/.env`, see below) — no secrets are committed here
 - `logging.php`, `schema.php`, `webpush.php`, `clean-notifications.php`, `migrate-posts.php` — supporting modules
 - `src/{Auth,Comments,Follows,Media,Notifications,Posts,Users}/handlers.php` — per-domain action handlers, loaded via Composer's `files` autoload
-- `tests/backend-tests/` — backend test scripts
+
+Tests live in [`sstests`](https://github.com/DavidFruin/sstests) (`backend/`), not here — kept out of this repo on purpose so test code never ships to the server.
 
 ## Configuration
 
