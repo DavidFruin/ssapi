@@ -28,7 +28,22 @@ function handle_getNotifications($pdo, $user) {
     // than excluded by the general actor_id != recipient_id noise filter.
     $stmt = $pdo->prepare('SELECT n.id, n.recipient_id, n.actor_id, COALESCE(u.email, n.actor_email) AS actor_email, n.type, n.post_id, n.created_at FROM notifications n LEFT JOIN users u ON n.actor_id = u.id WHERE n.recipient_id = ? AND (n.actor_id != ? OR n.type = \'mention\') ORDER BY n.created_at DESC LIMIT ? OFFSET ?');
     $stmt->execute([$user['sub'], $user['sub'], $limit, $offset]);
-    respond(good(['notifications' => $stmt->fetchAll(PDO::FETCH_ASSOC)]));
+    $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    // Per-row `seen`, computed the same way getUnseenNotificationCount()
+    // computes its total -- there's no per-notification seen column, just
+    // the one last_notifications_seen_at timestamp on the user, so a row
+    // counts as seen when it's no newer than that. Added so a client can
+    // highlight unseen rows individually instead of only showing a total
+    // count.
+    $stmt = $pdo->prepare('SELECT last_notifications_seen_at FROM users WHERE id = ?');
+    $stmt->execute([$user['sub']]);
+    $lastSeen = $stmt->fetchColumn();
+    foreach ($notifications as &$n) {
+        $n['seen'] = $lastSeen ? ($n['created_at'] <= $lastSeen) : false;
+    }
+
+    respond(good(['notifications' => $notifications]));
 }
 
 // Shared with pushNotification() so a push payload's embedded count is

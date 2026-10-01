@@ -46,6 +46,24 @@ function mediaMaxSizes() {
     ];
 }
 
+// Exposes the subset of $CONFIG a client needs to self-enforce limits
+// before even trying an upload -- e.g. ssreact reads maxSeconds to cap a
+// recording client-side and to reject an over-long picked file before
+// spending a round trip on it, rather than hardcoding its own copy of
+// media_max_seconds that could drift from this file's. Auth'd (not in
+// api.php's $PUBLIC_ENDPOINTS) since nothing outside the app needs it.
+function handle_getMediaLimits($pdo, $user) {
+    global $CONFIG;
+    respond(good([
+        'maxSeconds' => $CONFIG['media_max_seconds'],
+        'maxFps' => $CONFIG['media_max_fps'],
+        'maxSide' => $CONFIG['media_max_side'],
+        'maxImageBytes' => $CONFIG['media_max_image_bytes'],
+        'maxVideoBytes' => $CONFIG['media_max_video_bytes'],
+        'maxAudioBytes' => $CONFIG['media_max_audio_bytes'],
+    ]));
+}
+
 function getMediaDir($userId) {
     return __DIR__ . '/../../media/' . $userId;
 }

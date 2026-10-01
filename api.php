@@ -394,6 +394,7 @@ $HANDLERS = [
     'markNotificationsSeen' => 'handle_markNotificationsSeen', 'getPostById' => 'handle_getPostById',
     'getPostPreviews' => 'handle_getPostPreviews',
     'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand',
+    'getMediaLimits' => 'handle_getMediaLimits',
     'getVapidPublicKey' => 'handle_getVapidPublicKey',
     'savePushSubscription' => 'handle_savePushSubscription',
     'deletePushSubscription' => 'handle_deletePushSubscription',
