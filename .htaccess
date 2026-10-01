@@ -4,6 +4,15 @@ RewriteEngine On
 RewriteCond %{HTTP:Authorization} ^(.*)
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%1]
 
+# Scheduled maintenance: dormant unless a file literally named index.php
+# exists in the docroot (see index.maintenance.php's own comment for how
+# to toggle it). When it does, every request -- pages, api.php, media.php,
+# everything -- gets routed to it instead of normal routing. Checked first
+# so nothing below this ever runs while it's active.
+RewriteCond %{DOCUMENT_ROOT}/index.php -f
+RewriteCond %{REQUEST_URI} !^/index\.php$
+RewriteRule ^ index.php [L]
+
 # Block direct access to sensitive files
 <FilesMatch "\.(db|log|env|sqlite)$">
     Require all denied
