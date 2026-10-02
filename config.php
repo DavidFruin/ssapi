@@ -63,6 +63,9 @@ if ($envSecret !== '') {
 
 $CONFIG['vapid_public'] = getenv('VAPID_PUBLIC_KEY') ?: ($_ENV['VAPID_PUBLIC_KEY'] ?? null);
 $CONFIG['vapid_private'] = getenv('VAPID_PRIVATE_KEY') ?: ($_ENV['VAPID_PRIVATE_KEY'] ?? null);
+// Read by pushNotification() (api.php), which until now had no way to
+// actually set it -- it fell back to its own hard-coded default every time.
+$CONFIG['vapid_subject'] = getenv('VAPID_SUBJECT') ?: ($_ENV['VAPID_SUBJECT'] ?? null);
 
 // Off by default (S10) -- was hard-coded true, which meant every request
 // logged emails, IPs, post snippets and session ids into api.log forever
