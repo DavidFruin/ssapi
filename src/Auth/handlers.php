@@ -72,7 +72,10 @@ function clearAttempts($pdo, $keys) {
 }
 
 function validatePasswordRules($password) {
-    if (strlen($password) < 8 || strlen($password) > 25) bad('Password must be 8-25 characters', 400);
+    // bcrypt only reads the first 72 bytes, so that's the real ceiling --
+    // 25 blocked legitimate password-manager-generated passwords for no
+    // reason.
+    if (strlen($password) < 8 || strlen($password) > 72) bad('Password must be 8-72 characters', 400);
     if (!preg_match('/[a-z]/', $password)) bad('Password must contain a lowercase letter', 400);
     if (!preg_match('/[A-Z]/', $password)) bad('Password must contain an uppercase letter', 400);
     if (!preg_match('/\d/', $password)) bad('Password must contain a number', 400);
