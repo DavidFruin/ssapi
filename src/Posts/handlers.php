@@ -122,6 +122,7 @@ function handle_getPostById($pdo, $user) {
     $post['userID'] = (int)$row['user_id'];
     $post['userEmail'] = $ownerEmail;
     $post['mentions'] = hydrateMentions($pdo, $post['text']);
+    $post['commentCount'] = getCommentCountsForPostIds($pdo, [$postId])[$postId] ?? 0;
     respond(good(['post' => $post]));
 }
 
@@ -219,12 +220,14 @@ function handle_getMyPosts($pdo, $user) {
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
     $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
+    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
     $posts = [];
     foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = $uid;
         $post['userEmail'] = $user['email'];
         $post['mentions'] = $mentions[$i];
+        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
         $posts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;
@@ -252,12 +255,14 @@ function handle_getUserPosts($pdo, $user) {
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
     $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
+    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
     $posts = [];
     foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = $targetId;
         $post['userEmail'] = $targetEmail;
         $post['mentions'] = $mentions[$i];
+        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
         $posts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;
@@ -295,12 +300,14 @@ function handle_fetchFollowedPosts($pdo, $user) {
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
     $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
+    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
     $allPosts = [];
     foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = (int)$row['user_id'];
         $post['userEmail'] = $row['email'];
         $post['mentions'] = $mentions[$i];
+        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
         $allPosts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;
