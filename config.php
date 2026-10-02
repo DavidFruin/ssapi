@@ -48,9 +48,11 @@ function loadDotEnv($dir) {
     }
 }
 
-loadDotEnv(__DIR__);
-loadDotEnv(dirname(__DIR__));
-if (file_exists(__DIR__ . '/../private/.env')) loadDotEnv(__DIR__ . '/../private');
+// Only private/, never the docroot or its parent -- a missing private/
+// directory used to silently fall back to creating the DB and logs inside
+// the docroot itself (below), so secrets have no fallback path either.
+$privateDir = dirname(__DIR__) . '/private';
+loadDotEnv($privateDir);
 
 $envSecret = getenv('JWT_SECRET') ?: ($_ENV['JWT_SECRET'] ?? '');
 if ($envSecret !== '') {
@@ -67,15 +69,8 @@ $CONFIG['vapid_private'] = getenv('VAPID_PRIVATE_KEY') ?: ($_ENV['VAPID_PRIVATE_
 // (no rotation until S10 below), on every host including prod.
 $CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN);
 
-$privateDb = dirname(__DIR__) . '/private/userdata.db';
-$privateLogs = dirname(__DIR__) . '/private/logs';
-if (file_exists($privateDb) || is_dir(dirname($privateDb))) {
-    $CONFIG['db_path'] = $privateDb;
-} else {
-    $CONFIG['db_path'] = __DIR__ . '/userdata.db';
-}
-if (is_dir($privateLogs) || file_exists($privateLogs)) {
-    $CONFIG['log_dir'] = $privateLogs;
-} else {
-    $CONFIG['log_dir'] = __DIR__ . '/logs';
-}
+// No docroot fallback: db() (schema.php) checks private/ actually exists
+// before ever opening a connection and fails closed (500) if it doesn't,
+// rather than quietly creating userdata.db where it's web-reachable.
+$CONFIG['db_path'] = $privateDir . '/userdata.db';
+$CONFIG['log_dir'] = $privateDir . '/logs';

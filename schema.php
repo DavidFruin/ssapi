@@ -27,6 +27,14 @@ function db() {
     if ($pdo) return $pdo;
     global $CONFIG;
     $dbPath = $CONFIG['db_path'] ?? __DIR__ . '/userdata.db';
+    // Fails closed (S11) instead of silently creating userdata.db wherever
+    // dirname($dbPath) happens to resolve to -- config.php no longer has a
+    // docroot fallback, so a missing private/ means something is actually
+    // wrong with this deploy, not a signal to improvise a new location.
+    if (!is_dir(dirname($dbPath))) {
+        error_log('ssapi: private/ directory missing');
+        respond(['valid' => false, 'error' => 'Server misconfigured'], 500);
+    }
     $pdo = new PDO('sqlite:' . $dbPath, null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_TIMEOUT => 5,
