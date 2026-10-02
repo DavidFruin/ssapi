@@ -85,6 +85,12 @@ function respond($data, $code = 200) {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
     header('Content-Length: ' . strlen($body));
+    // S12: a second line of defence for the JWT/refresh token sitting in
+    // localStorage -- nosniff stops a browser from ever reinterpreting this
+    // JSON as something executable; no-store keeps auth responses out of
+    // any cache.
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
     echo $body;
     if (!empty($DEFERRED)) {
         while (ob_get_level() > 0) ob_end_flush();

@@ -13,8 +13,18 @@ RewriteCond %{DOCUMENT_ROOT}/index.php -f
 RewriteCond %{REQUEST_URI} !^/index\.php$
 RewriteRule ^ index.php [L]
 
-# Block direct access to sensitive files
-<FilesMatch "\.(db|log|env|sqlite)$">
+# Block direct access to sensitive files. Kept in sync with the safe
+# (additive-only) part of ssreact/public/.htaccess's deny rules (S2) --
+# this file's own conversion to a strict PHP allowlist (deny everything
+# except api.php/media.php/index.php) is NOT done here yet. That change
+# risks breaking any PHP file app/dev's currently-deployed vanilla frontend
+# (simple-social's own copy, not this repo) still relies on, and the plan
+# explicitly calls for Dave to run `ls *.php` on el1 first to confirm
+# nothing else is needed in the allowlist before this file gets that
+# rewrite. ssreact/public/.htaccess (the canonical, enforced copy on the
+# shared react.davidfruin.com docroot) already has the full allowlist,
+# since nothing there depends on a vanilla PHP frontend.
+<FilesMatch "\.(db|db-wal|db-shm|log|env|sqlite|md)$">
     Require all denied
 </FilesMatch>
 <FilesMatch "^(\.env|\.htaccess|\.gitignore)$">
@@ -33,7 +43,9 @@ RewriteRule ^ index.php [L]
     Require all denied
 </Files>
 <IfModule mod_rewrite.c>
-    RewriteRule ^vendor/ - [F,L]
+    RewriteRule ^(vendor|src|private|tmp)/ - [F,L]
+    # Uploaded media is data, never code or active content (see S3).
+    RewriteRule ^media/.*\.(php\d?|phtml|phar|html?|svg|js|mjs)$ - [F,L]
 </IfModule>
 
 RewriteRule ^(userdata\.db|.*\.log|\.env.*|clean-notifications\.php)$ - [F,L]

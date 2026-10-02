@@ -27,6 +27,11 @@ function respond($data, $code = 200) {
     ob_clean();
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
+    // S12: same reasoning as api.php's respond() -- a second line of
+    // defence for the localStorage-held tokens, and media responses
+    // (which can include a fresh mediaUrl) shouldn't be cached either.
+    header('X-Content-Type-Options: nosniff');
+    header('Cache-Control: no-store');
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
