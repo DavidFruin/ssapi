@@ -207,48 +207,17 @@ function handle_post($pdo, $user) {
     respond(good(['postId' => $postId]));
 }
 
-function handle_getMyPosts($pdo, $user) {
-    [$limit, $offset] = pageParams();
-    $uid = $user['sub'];
-
-    $countStmt = $pdo->prepare('SELECT COUNT(*) FROM posts WHERE user_id = ?');
-    $countStmt->execute([$uid]);
-    $totalCount = (int)$countStmt->fetchColumn();
-
-    $stmt = $pdo->prepare("SELECT id, user_id, text, media_url, created_at FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
-    $stmt->execute([$uid]);
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
-    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
-    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
-    $posts = [];
-    foreach ($rows as $i => $row) {
-        $post = postRowToApi($row, $likesByPost);
-        $post['userID'] = $uid;
-        $post['userEmail'] = $user['email'];
-        $post['mentions'] = $mentions[$i];
-        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
-        $posts[] = $post;
-    }
-    $hasMore = ($offset + $limit) < $totalCount;
-
-    respond(good(['posts' => $posts, 'hasMore' => $hasMore, 'totalCount' => $totalCount]));
-}
-
-function handle_getUserPosts($pdo, $user) {
-    $targetId = (int)($_POST['userId'] ?? 0);
-    if ($targetId <= 0) bad('Invalid user ID', 400);
-
-    [$limit, $offset] = pageParams();
-
+// Shared by handle_getMyPosts and handle_getUserPosts (C4) -- the two were
+// identical except where the target id/email came from (the caller's own
+// $user vs. a looked-up $_POST['userId']). getMyPosts passes $user['email']
+// straight through rather than looking its own email up again, which a
+// literal "getMyPosts just calls getUserPosts with userId=$user['sub']"
+// dedup would have reintroduced -- exactly the redundant-query class P9
+// just removed elsewhere.
+function fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset) {
     $countStmt = $pdo->prepare('SELECT COUNT(*) FROM posts WHERE user_id = ?');
     $countStmt->execute([$targetId]);
     $totalCount = (int)$countStmt->fetchColumn();
-
-    $emailStmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $emailStmt->execute([$targetId]);
-    $targetEmail = $emailStmt->fetchColumn() ?: 'User ' . $targetId;
 
     $stmt = $pdo->prepare("SELECT id, user_id, text, media_url, created_at FROM posts WHERE user_id = ? ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
     $stmt->execute([$targetId]);
@@ -268,7 +237,25 @@ function handle_getUserPosts($pdo, $user) {
     }
     $hasMore = ($offset + $limit) < $totalCount;
 
-    respond(good(['posts' => $posts, 'hasMore' => $hasMore, 'totalCount' => $totalCount]));
+    return ['posts' => $posts, 'hasMore' => $hasMore, 'totalCount' => $totalCount];
+}
+
+function handle_getMyPosts($pdo, $user) {
+    [$limit, $offset] = pageParams();
+    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $user['email'], $limit, $offset)));
+}
+
+function handle_getUserPosts($pdo, $user) {
+    $targetId = (int)($_POST['userId'] ?? 0);
+    if ($targetId <= 0) bad('Invalid user ID', 400);
+
+    [$limit, $offset] = pageParams();
+
+    $emailStmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
+    $emailStmt->execute([$targetId]);
+    $targetEmail = $emailStmt->fetchColumn() ?: 'User ' . $targetId;
+
+    respond(good(fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset)));
 }
 
 function handle_fetchFollowedPosts($pdo, $user) {
