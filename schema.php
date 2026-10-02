@@ -10,11 +10,12 @@
 // and the schema work underneath it runs exactly once per database via
 // PRAGMA user_version, not once per request.
 //
-// ensureSharedSchema() predates that and stays as its own function (rather
-// than folding straight into migration1()) because migrate-posts.php, a
-// standalone one-off script, calls it directly on its own PDO handle --
-// outside of db() and outside of any request. migration1() below calls it
-// too, so normal requests still get the same tables.
+// ensureSharedSchema() stays as its own function, not folded into
+// migration1() directly, purely for readability -- it groups the tables
+// both entry points need (media.php writes some of these rows, api.php
+// reads them) separately from everything else migration1() sets up.
+// migration1() calls it below so a fresh database still gets the same
+// tables as everything else.
 
 const SCHEMA_VERSION = 1;
 
@@ -152,10 +153,8 @@ function migration1($pdo) {
 }
 
 // Tables both entry points need (media.php writes some of these rows,
-// api.php reads them) -- kept as its own function, not folded into
-// migration1(), because migrate-posts.php (a standalone one-off script)
-// calls this directly on its own PDO handle, outside of db()/ensureSchema()
-// entirely. Idempotent: safe to call more than once.
+// api.php reads them) -- kept as its own function purely for readability,
+// see this file's header comment. Idempotent: safe to call more than once.
 function ensureSharedSchema($pdo) {
     // Uploaded files. Both entry points need this: media.php writes the rows,
     // api.php reads them when a post is created or an account is deleted. It
@@ -217,12 +216,9 @@ function ensureSharedSchema($pdo) {
         }
     } catch (Exception $e) {}
 
-    // Real posts table, alongside the legacy users.posts JSON blob it's
-    // meant to replace. Not read or written by api.php yet -- migrate-posts.php
-    // copies existing data in when we're ready to cut over, and only once
-    // the handlers are switched over does users.posts stop being the source
-    // of truth. Kept here (not just in api.php) so migrate-posts.php can
-    // create these tables too without duplicating the definitions.
+    // Real posts table, replacing the legacy users.posts JSON blob (that
+    // column is still there, unread, as a fallback -- see the simple-social
+    // war-table note's "Open -- database" section for dropping it).
     //
     // id keeps the existing "ownerId.timestamp" shape so comments.post_id,
     // media.post_id and notifications.post_id -- and every client -- don't

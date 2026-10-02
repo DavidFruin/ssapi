@@ -30,9 +30,6 @@ RewriteRule ^ index.php [L]
 <FilesMatch "^(\.env|\.htaccess|\.gitignore)$">
     Require all denied
 </FilesMatch>
-<Files "clean-notifications.php">
-    Require all denied
-</Files>
 <Files "config.php">
     Require all denied
 </Files>
@@ -48,5 +45,5 @@ RewriteRule ^ index.php [L]
     RewriteRule ^media/.*\.(php\d?|phtml|phar|html?|svg|js|mjs)$ - [F,L]
 </IfModule>
 
-RewriteRule ^(userdata\.db|.*\.log|\.env.*|clean-notifications\.php)$ - [F,L]
+RewriteRule ^(userdata\.db|.*\.log|\.env.*)$ - [F,L]
 
