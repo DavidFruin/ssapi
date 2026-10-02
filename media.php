@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/schema.php';
 require_once __DIR__ . '/auth.php';
 // Loads src/Media/handlers.php (and every other module's, harmlessly --
@@ -16,14 +17,10 @@ error_reporting(E_ALL);
 
 $action = $_POST['action'] ?? $_GET['action'] ?? '';
 
+// Routes through logging.php's writeLog() (S10) -- was always on
+// regardless of $CONFIG['debug'], with no rotation and no size limit.
 function logMsg($msg) {
-    global $CONFIG;
-    $logDir = $CONFIG['log_dir'] ?? (__DIR__ . '/logs');
-    if (!is_dir($logDir)) @mkdir($logDir, 0755, true);
-    $logFile = rtrim($logDir, '/') . '/media.log';
-    $timestamp = date('Y-m-d H:i:s');
-    $entry = "[$timestamp] $msg\n";
-    @file_put_contents($logFile, $entry, FILE_APPEND | LOCK_EX);
+    writeLog('DEBUG', 'media', $msg);
 }
 
 function respond($data, $code = 200) {

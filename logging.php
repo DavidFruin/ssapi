@@ -47,7 +47,7 @@ function rotateLog($filePath) {
 function writeLog($level, $category, $message, $context = []) {
     global $CONFIG;
 
-    $minLevel = (!empty($CONFIG['test_mode'])) ? 'DEBUG' : 'WARN';
+    $minLevel = (!empty($CONFIG['debug'])) ? 'DEBUG' : 'WARN';
     if ((LOG_LEVELS[$level] ?? 0) < (LOG_LEVELS[$minLevel] ?? 0)) return;
 
     ensureLogDir();
@@ -69,35 +69,20 @@ function writeLog($level, $category, $message, $context = []) {
     @file_put_contents($logFile, $entry, FILE_APPEND | LOCK_EX);
 }
 
-function logFrontendError($message, $context = []) {
-    writeLog('ERROR', 'frontend', $message, $context);
-}
-
-function logFrontendInfo($message, $context = []) {
-    writeLog('INFO', 'frontend', $message, $context);
-}
-
+// logFrontendError/logFrontendInfo/logApiAccess/logPhpError (plus
+// jwtClaimsUnverified, removed in S6) were never called anywhere --
+// deleted rather than kept as unused surface. logApiError stays: bad()
+// calls it on every error response.
 function logApiError($action, $message, $context = []) {
     $context['extra'] = 'action=' . $action;
     writeLog('ERROR', 'api', $message, $context);
 }
 
-function logApiAccess($action, $userId = '-', $context = []) {
-    $context['extra'] = 'action=' . $action;
-    writeLog('INFO', 'access', 'request', $context);
-}
-
-function logPhpError($message, $context = []) {
-    writeLog('ERROR', 'php', $message, $context);
-}
-
 function handle_log_request($pdo, $user) {
-    if (!$user) {
-        respond(['valid' => false, 'error' => 'Unauthorized'], 401);
-    }
-
+    // No $user check: 'log' isn't in api.php's $PUBLIC_ENDPOINTS, so
+    // requireAuth() already guarantees a user or has responded 401 and
+    // exited before this handler is ever reached.
     $level = $_POST['level'] ?? 'ERROR';
-    $category = $_POST['category'] ?? 'frontend';
     // One line per entry: strip line breaks so a client can't forge log lines.
     $clean = fn($v) => substr(str_replace(["\r", "\n"], ' ', (string)$v), 0, 2000);
     $message = $clean($_POST['message'] ?? '');
@@ -114,10 +99,10 @@ function handle_log_request($pdo, $user) {
     $validLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR'];
     $level = in_array(strtoupper($level), $validLevels) ? strtoupper($level) : 'ERROR';
 
-    $validCategories = ['frontend', 'api', 'access', 'php'];
-    $category = in_array($category, $validCategories) ? $category : 'frontend';
-
-    writeLog($level, $category, $message, $context);
+    // Always 'frontend': this endpoint exists for the client to report its
+    // own errors, not to let a caller pick which log file (api/access/php)
+    // their entry lands in.
+    writeLog($level, 'frontend', $message, $context);
 
     respond(good(['message' => 'Logged']));
 }

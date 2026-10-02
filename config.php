@@ -2,9 +2,6 @@
 // config.php - Application Configuration
 
 $CONFIG = [
-    'debug' => true,
-    'test_mode' => true,
-
     // Media upload limits (media.php). Adjust these to change what's
     // accepted without touching code.
     'media_max_seconds' => 10,             // video/audio can't be longer than this
@@ -64,6 +61,11 @@ if ($envSecret !== '') {
 
 $CONFIG['vapid_public'] = getenv('VAPID_PUBLIC_KEY') ?: ($_ENV['VAPID_PUBLIC_KEY'] ?? null);
 $CONFIG['vapid_private'] = getenv('VAPID_PRIVATE_KEY') ?: ($_ENV['VAPID_PRIVATE_KEY'] ?? null);
+
+// Off by default (S10) -- was hard-coded true, which meant every request
+// logged emails, IPs, post snippets and session ids into api.log forever
+// (no rotation until S10 below), on every host including prod.
+$CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN);
 
 $privateDb = dirname(__DIR__) . '/private/userdata.db';
 $privateLogs = dirname(__DIR__) . '/private/logs';

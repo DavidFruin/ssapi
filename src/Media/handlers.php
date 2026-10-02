@@ -335,8 +335,6 @@ function handle_uploadMedia() {
     $user = requireAuth();
     $uid = $user['sub'];
 
-    logMsg("uploadMedia: user=$uid files=" . json_encode($_FILES));
-
     if (!isset($_FILES['file'])) {
         bad('No file was selected', 400);
     }

@@ -25,15 +25,12 @@ function getRawPostData() {
 
 $_POST = array_merge($_POST, getRawPostData());
 
+// Now routes through logging.php's writeLog(), same rotating (5MB x 3),
+// off-by-default (debug-gated) logger as everything else -- this used to
+// write straight to api.log with no rotation and no size limit, which is
+// how it grew to ~10MB sitting in a web-served folder on prod (S2).
 function logMsg($msg) {
-    global $CONFIG;
-    if (empty($CONFIG['debug'])) return;
-    $logDir = $CONFIG['log_dir'] ?? (__DIR__ . '/logs');
-    if (!is_dir($logDir)) @mkdir($logDir, 0755, true);
-    $logFile = rtrim($logDir, '/') . '/api.log';
-    $timestamp = date('Y-m-d H:i:s');
-    $entry = "[$timestamp] $msg\n";
-    @file_put_contents($logFile, $entry, FILE_APPEND | LOCK_EX);
+    writeLog('DEBUG', 'api', $msg);
 }
 
 function logRequest($action, $params = [], $isPublic = false) {
