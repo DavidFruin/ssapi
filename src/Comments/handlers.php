@@ -20,11 +20,16 @@ function handle_createComment($pdo, $user) {
     validateContent($text, 'Illegal characters in comment');
     $mentionIds = extractMentions($text);
 
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    $stmt->execute([$postId]);
+    $ownerId = $stmt->fetchColumn();
+    if ($ownerId === false) bad('Post not found', 404);
+    $ownerId = (int)$ownerId;
+
     $stmt = $pdo->prepare('INSERT INTO comments (post_id, user_id, comment_text, created_at) VALUES (?, ?, ?, ?)');
     $stmt->execute([$postId, $user['sub'], $text, date('Y-m-d H:i:s')]);
     $commentId = $pdo->lastInsertId();
 
-    $ownerId = (int)explode('.', $postId)[0];
     if ($mentionIds || $ownerId != $user['sub']) {
         $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
         $stmt->execute([$user['sub']]);

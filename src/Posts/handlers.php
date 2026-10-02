@@ -313,25 +313,25 @@ function handle_likePost($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
-    // Checked against the id's own prefix, before touching the posts table,
-    // same as before the tables existed - so this still rejects a self-like
-    // even for a postId that turns out not to exist.
-    $ownerId = (int)explode('.', $postId)[0];
-    if ($ownerId == $user['sub']) bad('Cannot like your own post', 400);
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    $stmt->execute([$postId]);
+    $realOwnerId = $stmt->fetchColumn();
+    if ($realOwnerId === false) bad('Post not found', 404);
+    $realOwnerId = (int)$realOwnerId;
+
+    // Checked against the real owner from the posts table, not the id's own
+    // prefix -- a made-up postId naming another user's id used to pass this
+    // check before ever touching the table.
+    if ($realOwnerId == $user['sub']) bad('Cannot like your own post', 400);
 
     $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $actorEmail = $stmt->fetchColumn() ?: 'Unknown';
 
-    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
-    $stmt->execute([$postId]);
-    $realOwnerId = $stmt->fetchColumn();
-    if ($realOwnerId === false) bad('Post not found', 404);
-
     $insert = $pdo->prepare('INSERT OR IGNORE INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, ?)');
     $insert->execute([$postId, $user['sub'], date('Y-m-d H:i:s')]);
     if ($insert->rowCount() > 0) {
-        createNotification($pdo, (int)$realOwnerId, $user['sub'], $actorEmail, 'like', $postId);
+        createNotification($pdo, $realOwnerId, $user['sub'], $actorEmail, 'like', $postId);
     }
 
     respond(good(['liked' => true]));
