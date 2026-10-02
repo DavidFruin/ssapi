@@ -86,12 +86,20 @@ function handle_savePushSubscription($pdo, $user) {
     $p256dh = trim($_POST['p256dh'] ?? '');
     $auth = trim($_POST['auth'] ?? '');
     if (!$endpoint || !$p256dh || !$auth) bad('Missing subscription details', 400);
-    if (!filter_var($endpoint, FILTER_VALIDATE_URL)) bad('Invalid endpoint', 400);
+    if (!isAllowedPushEndpoint($endpoint)) bad('Invalid endpoint', 400);
+    if (strlen(webpush_b64url_decode($p256dh)) !== 65 || strlen(webpush_b64url_decode($auth)) !== 16) bad('Invalid subscription keys', 400);
 
     // Recorded against the session that enabled it, so revoking a device
     // also silences its notifications.
     $stmt = $pdo->prepare('INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?)');
     $stmt->execute([$user['sub'], $endpoint, $p256dh, $auth, date('Y-m-d H:i:s'), $user['sid'] ?? null]);
+
+    // Caps subscription rows per user so a misbehaving or malicious client
+    // can't pile up an unbounded number of push targets.
+    $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
+        (SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 10)')
+        ->execute([$user['sub'], $user['sub']]);
+
     respond(good(['message' => 'Push enabled']));
 }
 

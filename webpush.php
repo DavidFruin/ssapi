@@ -7,6 +7,27 @@
 // a raw P-256 key in just enough ASN.1 for OpenSSL to load it -- there's no
 // PHP API to build an EC key resource from raw bytes directly.
 
+// Browser push services only. Anything else is either a bug or an attempt to
+// make the server send requests somewhere it shouldn't.
+const PUSH_HOST_SUFFIXES = [
+    'fcm.googleapis.com',                // Chrome, Edge (Chromium), Android
+    'updates.push.services.mozilla.com', // Firefox
+    'notify.windows.com',                // WNS
+    'push.apple.com',                    // Safari / iOS
+];
+
+function isAllowedPushEndpoint($endpoint) {
+    $p = parse_url((string)$endpoint);
+    if (!$p || ($p['scheme'] ?? '') !== 'https' || empty($p['host'])) return false;
+    if (isset($p['user']) || isset($p['pass'])) return false;
+    if (isset($p['port']) && (int)$p['port'] !== 443) return false;
+    $host = strtolower($p['host']);
+    foreach (PUSH_HOST_SUFFIXES as $suffix) {
+        if ($host === $suffix || str_ends_with($host, '.' . $suffix)) return true;
+    }
+    return false;
+}
+
 function webpush_b64url_encode($bin) {
     return rtrim(str_replace(['+', '/'], ['-', '_'], base64_encode($bin)), '=');
 }
@@ -127,6 +148,8 @@ function sendWebPush($subscription, $payloadArray, $vapidEmail) {
     if ($body === false) return 0;
 
     $endpoint = $subscription['endpoint'];
+    if (!isAllowedPushEndpoint($endpoint)) return 410; // caller deletes the row
+
     $parsed = parse_url($endpoint);
     $audience = $parsed['scheme'] . '://' . $parsed['host'] . (isset($parsed['port']) ? ':' . $parsed['port'] : '');
     $jwt = webpushVapidJwt($audience, $vapidPublicRaw, $vapidPrivateRaw, $vapidEmail);
@@ -142,7 +165,10 @@ function sendWebPush($subscription, $payloadArray, $vapidEmail) {
             'Authorization: vapid t=' . $jwt . ', k=' . webpush_b64url_encode($vapidPublicRaw),
         ],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 10,
+        CURLOPT_PROTOCOLS => CURLPROTO_HTTPS,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => 2,
+        CURLOPT_TIMEOUT => 4,
     ]);
     curl_exec($ch);
     $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
