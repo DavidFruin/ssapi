@@ -93,12 +93,18 @@ function handle_unfollowUser($pdo, $user) {
     $actorEmail = $row['email'];
     $follows = json_decode($followsJson, true) ?? [];
 
+    $before = count($follows);
     $follows = array_filter($follows, fn($f) => (is_array($f) ? $f['id'] : $f) != $targetId);
     $follows = array_values($follows);
-    $stmt = $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?');
-    $stmt->execute([json_encode($follows), $uid]);
 
-    createNotification($pdo, $targetId, $uid, $actorEmail, 'unfollow');
+    // Only write and notify if the filter actually removed an entry --
+    // unfollowing someone you weren't following used to still update the
+    // row (a no-op write) and always notified them regardless.
+    if (count($follows) < $before) {
+        $stmt = $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?');
+        $stmt->execute([json_encode($follows), $uid]);
+        createNotification($pdo, $targetId, $uid, $actorEmail, 'unfollow');
+    }
 
     respond(good(['following' => false]));
 }
