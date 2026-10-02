@@ -234,24 +234,52 @@ function notifyMentions($pdo, $mentionIds, $actorId, $actorEmail, $postId) {
 // Resolves @[id] tokens to {id, email} for the API response, so clients
 // don't need a separate round trip. A deleted user's id still resolves --
 // email comes back null and the caller renders a fallback.
-function hydrateMentions($pdo, $text) {
-    preg_match_all('/@\[(\d+)\]/', $text, $matches);
-    $ids = array_values(array_unique(array_map('intval', $matches[1])));
-    if (!$ids) return [];
+// [key => [{id,email},...]] for every text in $texts, using a single users
+// query -- a 25-post feed page used to run one of these per row (25 extra
+// queries just for mentions), since hydrateMentions() below used to do its
+// own lookup every time it was called in a loop.
+function hydrateMentionsBatch($pdo, array $texts) {
+    $idsByKey = [];
+    $all = [];
+    foreach ($texts as $k => $t) {
+        preg_match_all('/@\[(\d+)\]/', (string)$t, $m);
+        $ids = array_values(array_unique(array_map('intval', $m[1])));
+        $idsByKey[$k] = $ids;
+        foreach ($ids as $id) $all[$id] = true;
+    }
 
-    $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");
-    $stmt->execute($ids);
     $emails = [];
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $emails[(int)$row['id']] = $row['email'];
+    if ($all) {
+        $ids = array_keys($all);
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");
+        $stmt->execute($ids);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+            $emails[(int)$row['id']] = $row['email'];
+        }
     }
 
-    $result = [];
-    foreach ($ids as $id) {
-        $result[] = ['id' => $id, 'email' => $emails[$id] ?? null];
+    $out = [];
+    foreach ($idsByKey as $k => $ids) {
+        $out[$k] = array_map(fn($id) => ['id' => $id, 'email' => $emails[$id] ?? null], $ids);
     }
-    return $result;
+    return $out;
+}
+
+function hydrateMentions($pdo, $text) {
+    return hydrateMentionsBatch($pdo, [$text])[0];
+}
+
+// One COUNT(*) GROUP BY instead of one query per post id -- a 25-post feed
+// page used to ask getPostCommentCounts for 25 individual COUNTs.
+function getCommentCountsForPostIds($pdo, array $postIds) {
+    if (!$postIds) return [];
+    $placeholders = implode(',', array_fill(0, count($postIds), '?'));
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders) GROUP BY post_id");
+    $stmt->execute(array_values($postIds));
+    $counts = array_fill_keys($postIds, 0);
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];
+    return $counts;
 }
 
 // AUTH HANDLERS (handle_login, handle_logout, handle_refreshToken,

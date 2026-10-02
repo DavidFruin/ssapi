@@ -218,12 +218,13 @@ function handle_getMyPosts($pdo, $user) {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
+    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
     $posts = [];
-    foreach ($rows as $row) {
+    foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = $uid;
         $post['userEmail'] = $user['email'];
-        $post['mentions'] = hydrateMentions($pdo, $post['text']);
+        $post['mentions'] = $mentions[$i];
         $posts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;
@@ -250,12 +251,13 @@ function handle_getUserPosts($pdo, $user) {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
+    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
     $posts = [];
-    foreach ($rows as $row) {
+    foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = $targetId;
         $post['userEmail'] = $targetEmail;
-        $post['mentions'] = hydrateMentions($pdo, $post['text']);
+        $post['mentions'] = $mentions[$i];
         $posts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;
@@ -292,12 +294,13 @@ function handle_fetchFollowedPosts($pdo, $user) {
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
+    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
     $allPosts = [];
-    foreach ($rows as $row) {
+    foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
         $post['userID'] = (int)$row['user_id'];
         $post['userEmail'] = $row['email'];
-        $post['mentions'] = hydrateMentions($pdo, $post['text']);
+        $post['mentions'] = $mentions[$i];
         $allPosts[] = $post;
     }
     $hasMore = ($offset + $limit) < $totalCount;

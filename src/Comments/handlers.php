@@ -51,7 +51,8 @@ function handle_getPostComments($pdo, $user) {
     $stmt = $pdo->prepare('SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at DESC LIMIT ? OFFSET ?');
     $stmt->execute([$postId, $limit, $offset]);
     $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
-    foreach ($comments as &$comment) $comment['mentions'] = hydrateMentions($pdo, $comment['text']);
+    $mentions = hydrateMentionsBatch($pdo, array_column($comments, 'text'));
+    foreach ($comments as $i => &$comment) $comment['mentions'] = $mentions[$i];
 
     $stmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE post_id = ?');
     $stmt->execute([$postId]);
@@ -81,12 +82,5 @@ function handle_getPostCommentCounts($pdo, $user) {
     $postIds = jsonIdList('postIds', 100);
     if (empty($postIds)) respond(good(['counts' => []]));
 
-    $counts = [];
-    foreach ($postIds as $postId) {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE post_id = ?');
-        $stmt->execute([$postId]);
-        $counts[$postId] = (int)$stmt->fetchColumn();
-    }
-
-    respond(good(['counts' => $counts]));
+    respond(good(['counts' => getCommentCountsForPostIds($pdo, $postIds)]));
 }
