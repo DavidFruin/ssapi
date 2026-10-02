@@ -5,7 +5,8 @@ require_once __DIR__ . '/auth.php';
 // Loads src/Media/handlers.php (and every other module's, harmlessly --
 // see that file's header comment for why sharing Composer's autoload.files
 // with api.php's modules doesn't collide with this file's own logMsg/
-// respond/bad/good/db/requireAuth below).
+// respond/bad/good/requireAuth below -- db() itself is shared, from
+// schema.php, not duplicated here).
 require_once __DIR__ . '/vendor/autoload.php';
 
 ob_start();
@@ -43,15 +44,9 @@ function good($data = []) {
     return array_merge(['valid' => true], $data);
 }
 
-function db() {
-    global $CONFIG;
-    $dbPath = $CONFIG['db_path'] ?? __DIR__ . '/userdata.db';
-    $pdo = new PDO('sqlite:' . $dbPath);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    // `media` is created by ensureSharedSchema, shared with api.php.
-    ensureSharedSchema($pdo);
-    return $pdo;
-}
+// db() now lives in schema.php, shared with api.php -- a static-cached
+// connection there means requireAuth() and the upload/delete handler below
+// share one PDO handle per request instead of each opening their own.
 
 // jwtVerify/verifyUser live in auth.php, shared with api.php - this file
 // used to carry its own near-identical copies, which is exactly how the two

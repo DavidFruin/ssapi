@@ -4,9 +4,10 @@
 //
 // IMPORTANT, unlike every other module: media.php is a SEPARATE entry
 // point from api.php with its own copies of logMsg()/respond()/bad()/
-// good()/db()/requireAuth() (different implementations, same names as
-// api.php's -- they were never shared to begin with, see media.php's own
-// comments). Those stay in media.php, NOT here -- moving them here would
+// good()/requireAuth() (different implementations, same names as api.php's
+// -- they were never shared to begin with, see media.php's own comments).
+// db() is the one exception -- it's shared, from schema.php (P3), not
+// duplicated. Those stay in media.php, NOT here -- moving them here would
 // load them unconditionally via Composer's autoload.files on every
 // request, api.php's included, and api.php already defines its own
 // versions of those exact names. That's a straight "Cannot redeclare"

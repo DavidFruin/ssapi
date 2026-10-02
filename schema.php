@@ -1,14 +1,153 @@
 <?php
-// schema.php - Table definitions shared by every entry point.
+// schema.php - Table definitions and the one db() shared by every entry
+// point.
 //
-// api.php and media.php each open their own PDO handle to the same SQLite
-// file and each run their own CREATE TABLE statements. Where both need the
-// same table, the definition lives here instead of being copy-pasted into
-// both - the `media` table already shows what happens otherwise, being
-// declared separately in both files and having to be kept in sync by hand.
+// Until P3, api.php and media.php each opened their own PDO handle and each
+// ran their own ~15 CREATE TABLE/INDEX/PRAGMA statements on every single
+// request -- two full schema scans per request minimum, three for a media
+// upload (media.php's requireAuth() and its handler each called db()).
+// db() below is now the only place either entry point opens a connection,
+// and the schema work underneath it runs exactly once per database via
+// PRAGMA user_version, not once per request.
 //
-// Everything here is idempotent: safe to call on every request.
+// ensureSharedSchema() predates that and stays as its own function (rather
+// than folding straight into migration1()) because migrate-posts.php, a
+// standalone one-off script, calls it directly on its own PDO handle --
+// outside of db() and outside of any request. migration1() below calls it
+// too, so normal requests still get the same tables.
 
+const SCHEMA_VERSION = 1;
+
+// The only place either entry point opens a database handle. Static, so a
+// single request (e.g. a media upload, which used to open three separate
+// connections across requireAuth() and its handler) reuses one connection
+// instead of re-running schema setup each time.
+function db() {
+    static $pdo = null;
+    if ($pdo) return $pdo;
+    global $CONFIG;
+    $dbPath = $CONFIG['db_path'] ?? __DIR__ . '/userdata.db';
+    $pdo = new PDO('sqlite:' . $dbPath, null, null, [
+        PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+        PDO::ATTR_TIMEOUT => 5,
+    ]);
+    $pdo->exec('PRAGMA busy_timeout = 5000');
+    ensureSchema($pdo);
+    return $pdo;
+}
+
+// Runs migration1(), migration2(), etc. in order, but only the ones newer
+// than what this database has already applied -- PRAGMA user_version is
+// SQLite's own built-in integer for exactly this. The second user_version
+// read is deliberate: it re-checks under the write lock in case another
+// request's migration finished while this one was waiting for BEGIN
+// IMMEDIATE, so two requests racing on a brand-new database can't both try
+// to run migration1().
+function ensureSchema($pdo) {
+    if ((int)$pdo->query('PRAGMA user_version')->fetchColumn() >= SCHEMA_VERSION) return;
+    $pdo->exec('BEGIN IMMEDIATE');
+    try {
+        $v = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
+        if ($v < 1) migration1($pdo);
+        $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
+        $pdo->exec('COMMIT');
+    } catch (Throwable $e) {
+        $pdo->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+// Everything that used to run on every request in api.php's db(), verbatim
+// and still idempotent (CREATE TABLE/INDEX IF NOT EXISTS throughout), plus:
+// - users/pending_users, which predate this repo and are created in no
+//   other source file (see the ssapi improvement plan's Phase 0.1) --
+//   harmless CREATE IF NOT EXISTS on every database that already has them.
+// - P4's comments/notifications composite indexes.
+// - idx_users_email_nocase (S14), skipped with a log line rather than
+//   thrown if existing data already has case-insensitive duplicate emails.
+//
+// Never edit this once it has shipped to any real database -- add
+// migration2() and bump SCHEMA_VERSION instead. A migration that changes
+// after it may have already run on dev or prod can leave those databases
+// permanently out of sync with a fresh install.
+function migration1($pdo) {
+    $pdo->exec('CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT NOT NULL,
+        password TEXT NOT NULL,
+        posts TEXT, follows NUMERIC, followers NUMERIC, jwt TEXT,
+        created_at TEXT,
+        reset_otp TEXT, reset_expires INTEGER DEFAULT 0,
+        last_notifications_seen_at TEXT,
+        is_admin INTEGER DEFAULT 0)');
+    $pdo->exec("CREATE TABLE IF NOT EXISTS pending_users (email TEXT, password TEXT, otp TEXT, dateCreated INTEGER)");
+
+    try {
+        $cols = $pdo->query("PRAGMA table_info(users)")->fetchAll(PDO::FETCH_ASSOC);
+        $hasTheme = false;
+        $hasHand = false;
+        foreach ($cols as $c) {
+            if ($c['name'] === 'theme') $hasTheme = true;
+            if ($c['name'] === 'hand') $hasHand = true;
+        }
+        if (!$hasTheme) $pdo->exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'");
+        if (!$hasHand) $pdo->exec("ALTER TABLE users ADD COLUMN hand TEXT NOT NULL DEFAULT 'right'");
+    } catch (Exception $e) {}
+
+    // Closes the race finishRegister's own transaction (S14) can't close by
+    // itself: two concurrent inserts for the same email can both pass that
+    // transaction's own duplicate check before either commits. Skipped (and
+    // logged, not thrown) if existing data already has case-insensitive
+    // duplicates -- creating the index would just fail outright.
+    try {
+        $dupes = (int)$pdo->query("SELECT COUNT(*) FROM (SELECT LOWER(email) FROM users GROUP BY 1 HAVING COUNT(*) > 1)")->fetchColumn();
+        if ($dupes === 0) {
+            $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase ON users(email COLLATE NOCASE)');
+        } else {
+            error_log("ssapi migration1: skipped idx_users_email_nocase, $dupes duplicate email(s) exist");
+        }
+    } catch (Exception $e) {}
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS notifications (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, recipient_id INTEGER NOT NULL,
+        actor_id INTEGER NOT NULL, actor_email TEXT NOT NULL, type TEXT NOT NULL,
+        post_id TEXT, created_at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id)');
+    // Notifications are listed filtered by recipient_id and sorted by
+    // created_at (P4) -- the index above only covers the filter column, so
+    // getNotifications still sorted the whole matching set without one.
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_notifications_recipient_created ON notifications(recipient_id, created_at)');
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT NOT NULL,
+        user_id INTEGER NOT NULL, comment_text TEXT NOT NULL, created_at TEXT NOT NULL)');
+    // comments.post_id had no index at all (P4) -- every comment count and
+    // comment list scanned the whole table.
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_post_created ON comments(post_id, created_at)');
+
+    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_attempts (
+        attempt_key TEXT PRIMARY KEY, failures INTEGER NOT NULL,
+        window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)');
+
+    // `media` and its post_id migration live in ensureSharedSchema() below -
+    // media.php needs the same table, and keeping one copy is the whole
+    // point of that function. One row per browser/device a user has
+    // enabled push on. endpoint is unique so re-subscribing the same
+    // browser replaces its row instead of piling up duplicates.
+    $pdo->exec('CREATE TABLE IF NOT EXISTS push_subscriptions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+        endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
+        created_at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)');
+
+    ensureSharedSchema($pdo);
+}
+
+// Tables both entry points need (media.php writes some of these rows,
+// api.php reads them) -- kept as its own function, not folded into
+// migration1(), because migrate-posts.php (a standalone one-off script)
+// calls this directly on its own PDO handle, outside of db()/ensureSchema()
+// entirely. Idempotent: safe to call more than once.
 function ensureSharedSchema($pdo) {
     // Uploaded files. Both entry points need this: media.php writes the rows,
     // api.php reads them when a post is created or an account is deleted. It

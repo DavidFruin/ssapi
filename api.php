@@ -74,60 +74,9 @@ function respond($data, $code = 200) {
     exit;
 }
 
-function db() {
-    global $CONFIG;
-    $dbPath = $CONFIG['db_path'] ?? __DIR__ . '/userdata.db';
-    $pdo = new PDO('sqlite:' . $dbPath);
-    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-    $pdo->exec('CREATE TABLE IF NOT EXISTS notifications (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, recipient_id INTEGER NOT NULL,
-        actor_id INTEGER NOT NULL, actor_email TEXT NOT NULL, type TEXT NOT NULL,
-        post_id TEXT, created_at TEXT NOT NULL)');
-    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_id)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS comments (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, post_id TEXT NOT NULL,
-        user_id INTEGER NOT NULL, comment_text TEXT NOT NULL, created_at TEXT NOT NULL)');
-    $pdo->exec('CREATE TABLE IF NOT EXISTS auth_attempts (
-        attempt_key TEXT PRIMARY KEY, failures INTEGER NOT NULL,
-        window_start INTEGER NOT NULL, locked_until INTEGER NOT NULL DEFAULT 0)');
-    // `media` and its post_id migration live in schema.php - media.php needs
-    // the same table, and keeping one copy is the whole point of that file.
-    // One row per browser/device a user has enabled push on. endpoint is
-    // unique so re-subscribing the same browser replaces its row instead of
-    // piling up duplicates.
-    $pdo->exec('CREATE TABLE IF NOT EXISTS push_subscriptions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-        endpoint TEXT NOT NULL UNIQUE, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
-        created_at TEXT NOT NULL)');
-    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user ON push_subscriptions(user_id)');
-    try {
-        $cols = $pdo->query("PRAGMA table_info(users)")->fetchAll(PDO::FETCH_ASSOC);
-        $hasTheme = false;
-        $hasHand = false;
-        foreach ($cols as $c) {
-            if ($c['name'] === 'theme') $hasTheme = true;
-            if ($c['name'] === 'hand') $hasHand = true;
-        }
-        if (!$hasTheme) $pdo->exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'");
-        if (!$hasHand) $pdo->exec("ALTER TABLE users ADD COLUMN hand TEXT NOT NULL DEFAULT 'right'");
-    } catch (Exception $e) {}
-    // Closes the race finishRegister's own transaction (S14) can't close by
-    // itself: two concurrent inserts for the same email can both pass that
-    // transaction's own duplicate check before either commits. Skipped (and
-    // logged, not thrown) if existing data already has case-insensitive
-    // duplicates -- creating the index would just fail outright, and this
-    // runs on every request.
-    try {
-        $dupes = (int)$pdo->query("SELECT COUNT(*) FROM (SELECT LOWER(email) FROM users GROUP BY 1 HAVING COUNT(*) > 1)")->fetchColumn();
-        if ($dupes === 0) {
-            $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase ON users(email COLLATE NOCASE)');
-        } else {
-            logMsg("db(): skipped idx_users_email_nocase, $dupes duplicate email(s) exist");
-        }
-    } catch (Exception $e) {}
-    ensureSharedSchema($pdo);
-    return $pdo;
-}
+// db() now lives in schema.php, shared with media.php -- see that file's
+// header comment. Everything that used to run here on every request moved
+// into migration1(), which runs once per database via PRAGMA user_version.
 
 // jwtEncode/jwtVerify/verifyUser now live in auth.php, shared with media.php.
 
