@@ -71,6 +71,25 @@ function clearAttempts($pdo, $keys) {
     $pdo->prepare('DELETE FROM auth_attempts WHERE attempt_key = ?')->execute([$keys['email']]);
 }
 
+// Counts sends (not failures) per key per ATTEMPT_WINDOW -- reuses the same
+// auth_attempts table as the failed-login/OTP-check throttle above, but
+// against a distinct key scope ('otpsend:...') so the two never share a
+// counter. Guards sendOTP/sendRegisterOTP, which are public and send a real
+// email on every call -- unthrottled, either can be used to flood any
+// inbox, which has already cost real mail deliverability once (see the TUI
+// registration note in simple-social).
+function throttleSend($pdo, $key, $limit) {
+    $now = time();
+    $sel = $pdo->prepare('SELECT failures, window_start FROM auth_attempts WHERE attempt_key = ?');
+    $sel->execute([$key]);
+    $row = $sel->fetch(PDO::FETCH_ASSOC);
+    $inWindow = $row && $now - $row['window_start'] < ATTEMPT_WINDOW;
+    $count = $inWindow ? $row['failures'] + 1 : 1;
+    if ($count > $limit) bad('Too many codes requested. Try again later.', 429);
+    $pdo->prepare('INSERT OR REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, 0)')
+        ->execute([$key, $count, $inWindow ? $row['window_start'] : $now]);
+}
+
 function validatePasswordRules($password) {
     // bcrypt only reads the first 72 bytes, so that's the real ceiling --
     // 25 blocked legitimate password-manager-generated passwords for no
@@ -214,10 +233,22 @@ function handle_sendOTP($pdo) {
     $email = trim($_POST['email'] ?? '');
     if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) bad('Valid email required', 400);
 
-    $stmt = $pdo->prepare('SELECT id, email FROM users WHERE LOWER(email) = LOWER(?)');
+    $k = attemptKeys('otpsend', $email);
+    throttleSend($pdo, $k['email'], 3);   // 3 codes per address per 15 min
+    throttleSend($pdo, $k['ip'], 10);     // 10 per IP per 15 min
+
+    $stmt = $pdo->prepare('SELECT id, email, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) bad('No account found with this email', 404);
+
+    // reset_expires is set to time()+600 when a code is issued, so
+    // reset_expires-600 is the issue time -- block a second request inside
+    // 60s of the last one even though the per-address throttle above would
+    // also eventually catch repeated requests across the whole window.
+    if (($row['reset_expires'] ?? 0) - 600 > time() - 60) {
+        bad('Please wait a minute before requesting another code.', 429);
+    }
 
     $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
@@ -289,9 +320,20 @@ function handle_sendRegisterOTP($pdo) {
     $email = trim($_POST['email'] ?? '');
     if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) bad('Valid email required', 400);
 
+    $k = attemptKeys('otpsend', $email);
+    throttleSend($pdo, $k['email'], 3);   // 3 codes per address per 15 min
+    throttleSend($pdo, $k['ip'], 10);     // 10 per IP per 15 min
+
     $stmt = $pdo->prepare('SELECT id FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     if ($stmt->fetchColumn()) bad('Email already registered', 400);
+
+    $stmt = $pdo->prepare('SELECT dateCreated FROM pending_users WHERE email = ?');
+    $stmt->execute([$email]);
+    $existingSentAt = $stmt->fetchColumn();
+    if ($existingSentAt !== false && (int)$existingSentAt > time() - 60) {
+        bad('Please wait a minute before requesting another code.', 429);
+    }
 
     $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('DELETE FROM pending_users WHERE email = ?');

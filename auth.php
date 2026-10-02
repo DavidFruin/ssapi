@@ -122,6 +122,14 @@ function deviceNameFromUserAgent($ua) {
 function sessionSweep($pdo, $userId) {
     $stmt = $pdo->prepare('DELETE FROM sessions WHERE user_id = ? AND (revoked_at IS NOT NULL OR expires_at < ?)');
     $stmt->execute([$userId, date('Y-m-d H:i:s')]);
+
+    // Piggybacks on this per-login sweep rather than running on every
+    // request -- auth_attempts (S4's send-throttle counters included)
+    // otherwise grows forever. Not scoped to $userId: this clears stale
+    // rows for everyone, which is fine since it only touches rows whose
+    // window has already expired.
+    $cutoff = time() - ATTEMPT_WINDOW;
+    $pdo->prepare('DELETE FROM auth_attempts WHERE window_start < ? AND locked_until < ?')->execute([$cutoff, $cutoff]);
 }
 
 // Keeps a user under the session cap by revoking least-recently-used
