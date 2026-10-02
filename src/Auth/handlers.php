@@ -347,10 +347,23 @@ function handle_finishRegister($pdo) {
 
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $created_at = date('Y-m-d H:i:s');
-    $stmt = $pdo->prepare('INSERT INTO users (email, password, posts, follows, followers, jwt, created_at) VALUES (?, ?, "[]", "[]", "[]", "", ?)');
-    $stmt->execute([$email, $hashed, $created_at]);
-    $stmt = $pdo->prepare('DELETE FROM pending_users WHERE email = ?');
-    $stmt->execute([$email]);
+
+    $pdo->exec('BEGIN IMMEDIATE');
+    try {
+        $s = $pdo->prepare('SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)');
+        $s->execute([$email]);
+        if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('Email already registered', 400); }
+        // Standard single-quoted SQL string literals, not SQLite's legacy
+        // double-quoted-identifier-as-string fallback -- a build compiled
+        // without that fallback would reject this INSERT outright.
+        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at)
+            VALUES (?, ?, '[]', '[]', '[]', '', ?)")->execute([$email, $hashed, $created_at]);
+        $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
+        $pdo->exec('COMMIT');
+    } catch (Throwable $e) {
+        $pdo->exec('ROLLBACK');
+        throw $e;
+    }
 
     respond(good(['message' => 'Account created successfully!']));
 }

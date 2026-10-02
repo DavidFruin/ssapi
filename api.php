@@ -111,6 +111,20 @@ function db() {
         if (!$hasTheme) $pdo->exec("ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'light'");
         if (!$hasHand) $pdo->exec("ALTER TABLE users ADD COLUMN hand TEXT NOT NULL DEFAULT 'right'");
     } catch (Exception $e) {}
+    // Closes the race finishRegister's own transaction (S14) can't close by
+    // itself: two concurrent inserts for the same email can both pass that
+    // transaction's own duplicate check before either commits. Skipped (and
+    // logged, not thrown) if existing data already has case-insensitive
+    // duplicates -- creating the index would just fail outright, and this
+    // runs on every request.
+    try {
+        $dupes = (int)$pdo->query("SELECT COUNT(*) FROM (SELECT LOWER(email) FROM users GROUP BY 1 HAVING COUNT(*) > 1)")->fetchColumn();
+        if ($dupes === 0) {
+            $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_nocase ON users(email COLLATE NOCASE)');
+        } else {
+            logMsg("db(): skipped idx_users_email_nocase, $dupes duplicate email(s) exist");
+        }
+    } catch (Exception $e) {}
     ensureSharedSchema($pdo);
     return $pdo;
 }
