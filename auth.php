@@ -181,7 +181,10 @@ function sessionCreate($pdo, $userId) {
 // Returns the session row if it's live and belongs to $userId, else false.
 function sessionLookup($pdo, $sessionId, $userId) {
     if (!$sessionId) return false;
-    $stmt = $pdo->prepare('SELECT * FROM sessions WHERE id = ?');
+    // Carries the user's email along with the session row (P9) -- every
+    // requireAuth() used to run a second "SELECT email FROM users" right
+    // after this on every single authenticated request just to get it.
+    $stmt = $pdo->prepare('SELECT s.*, u.email AS user_email FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ?');
     $stmt->execute([$sessionId]);
     $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
@@ -273,5 +276,6 @@ function verifyUser($jwt, $pdo) {
 
     sessionTouch($pdo, $session);
     $payload['session'] = $session;
+    $payload['email'] = $session['user_email'];
     return $payload;
 }

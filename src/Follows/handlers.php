@@ -62,11 +62,10 @@ function handle_followUser($pdo, $user) {
     if ($targetId <= 0 || $targetId == $user['sub']) bad('Invalid user ID', 400);
 
     $uid = $user['sub'];
-    $stmt = $pdo->prepare('SELECT follows, email FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
     $stmt->execute([$uid]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $followsJson = $row['follows'] ?: '[]';
-    $actorEmail = $row['email'];
+    $followsJson = $stmt->fetchColumn() ?: '[]';
+    $actorEmail = $user['email'];
     $follows = json_decode($followsJson, true) ?? [];
 
     $already = false;
@@ -86,11 +85,10 @@ function handle_unfollowUser($pdo, $user) {
     if ($targetId <= 0 || $targetId == $user['sub']) bad('Invalid user ID', 400);
 
     $uid = $user['sub'];
-    $stmt = $pdo->prepare('SELECT follows, email FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
     $stmt->execute([$uid]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    $followsJson = $row['follows'] ?: '[]';
-    $actorEmail = $row['email'];
+    $followsJson = $stmt->fetchColumn() ?: '[]';
+    $actorEmail = $user['email'];
     $follows = json_decode($followsJson, true) ?? [];
 
     $before = count($follows);

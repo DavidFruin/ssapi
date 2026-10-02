@@ -109,18 +109,18 @@ function handle_getPostById($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Post ID required', 400);
 
-    $stmt = $pdo->prepare('SELECT id, user_id, text, media_url, created_at FROM posts WHERE id = ?');
+    // LEFT, not inner: a post whose owner row is somehow gone should still
+    // render (same fallback as before, just folded into one query) rather
+    // than 404 as if the post itself didn't exist.
+    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email
+        FROM posts LEFT JOIN users ON users.id = posts.user_id WHERE posts.id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) bad('Post not found', 404);
 
-    $ownerStmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $ownerStmt->execute([$row['user_id']]);
-    $ownerEmail = $ownerStmt->fetchColumn() ?: '';
-
     $post = postRowToApi($row, getLikesForPostIds($pdo, [$postId]));
     $post['userID'] = (int)$row['user_id'];
-    $post['userEmail'] = $ownerEmail;
+    $post['userEmail'] = $row['email'] ?: '';
     $post['mentions'] = hydrateMentions($pdo, $post['text']);
     $post['commentCount'] = getCommentCountsForPostIds($pdo, [$postId])[$postId] ?? 0;
     respond(good(['post' => $post]));
@@ -330,9 +330,7 @@ function handle_likePost($pdo, $user) {
     // check before ever touching the table.
     if ($realOwnerId == $user['sub']) bad('Cannot like your own post', 400);
 
-    $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $stmt->execute([$user['sub']]);
-    $actorEmail = $stmt->fetchColumn() ?: 'Unknown';
+    $actorEmail = $user['email'];
 
     $insert = $pdo->prepare('INSERT OR IGNORE INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, ?)');
     $insert->execute([$postId, $user['sub'], date('Y-m-d H:i:s')]);
@@ -353,9 +351,7 @@ function handle_unlikePost($pdo, $user) {
     if ($ownerId === false) bad('Post not found', 404);
     $ownerId = (int)$ownerId;
 
-    $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $stmt->execute([$user['sub']]);
-    $actorEmail = $stmt->fetchColumn() ?: 'Unknown';
+    $actorEmail = $user['email'];
 
     $delete = $pdo->prepare('DELETE FROM post_likes WHERE post_id = ? AND user_id = ?');
     $delete->execute([$postId, $user['sub']]);

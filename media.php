@@ -59,10 +59,9 @@ function requireAuth() {
     $pdo = db();
     $user = verifyUser($jwt, $pdo);
     if (!$user) bad('Unauthorized', 401);
-    
-    $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $stmt->execute([$user['sub']]);
-    $user['email'] = $stmt->fetchColumn() ?: 'User';
+
+    // email arrives on $user already via verifyUser()/sessionLookup() (P9).
+    $user['email'] = $user['email'] ?: 'User';
     return $user;
 }
 

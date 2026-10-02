@@ -88,9 +88,10 @@ function requireAuth($pdo, $publicEndpoints) {
     $user = verifyUser($jwt, $pdo);
     logMsg("AUTH: action=$action result=" . ($user ? 'ok sub=' . $user['sub'] . ' sid=' . $user['sid'] : 'FAILED'));
     if (!$user) respond(['valid' => false, 'error' => 'Unauthorized'], 401);
-    $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $stmt->execute([$user['sub']]);
-    $user['email'] = $stmt->fetchColumn() ?: 'User';
+    // email now arrives on $user already -- verifyUser()/sessionLookup()
+    // (P9) join it from the same session-row query, so this used to be a
+    // second "SELECT email" on every single authenticated request.
+    $user['email'] = $user['email'] ?: 'User';
     return $user;
 }
 

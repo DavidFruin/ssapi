@@ -31,9 +31,7 @@ function handle_createComment($pdo, $user) {
     $commentId = $pdo->lastInsertId();
 
     if ($mentionIds || $ownerId != $user['sub']) {
-        $stmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-        $stmt->execute([$user['sub']]);
-        $actorEmail = $stmt->fetchColumn();
+        $actorEmail = $user['email'];
         if ($ownerId != $user['sub']) {
             createNotification($pdo, $ownerId, $user['sub'], $actorEmail, 'comment', $postId);
         }
