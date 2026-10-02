@@ -86,13 +86,22 @@ function getMediaType($mimeType) {
     return null;
 }
 
-// Extension to keep an unconverted file under, based on what it really is.
-function originalExtension($mimeType, $fileName) {
-    $byMime = [
-        'video/mp4' => 'mp4', 'video/quicktime' => 'mov', 'video/m4v' => 'm4v', 'video/webm' => 'webm',
-        'audio/mpeg' => 'mp3', 'audio/mp3' => 'mp3', 'audio/wav' => 'wav', 'audio/webm' => 'webm',
-    ];
-    return $byMime[$mimeType] ?? strtolower(pathinfo($fileName, PATHINFO_EXTENSION));
+// Real container/format from the file's first bytes; ignores whatever the
+// client claimed via Content-Type or filename. Needs no extension and no
+// fileinfo/mbstring extension, neither of which can be assumed on every
+// host this runs on. Returns ['family' => image|av|audio, 'ext' => ...]
+// or null if nothing recognized the content.
+function sniffMedia($path) {
+    $h = @file_get_contents($path, false, null, 0, 16);
+    if ($h === false || strlen($h) < 12) return null;
+    if (str_starts_with($h, "\x1A\x45\xDF\xA3")) return ['family' => 'av', 'ext' => 'webm'];
+    if (substr($h, 4, 4) === 'ftyp') return ['family' => 'av', 'ext' => substr($h, 8, 4) === 'qt  ' ? 'mov' : 'mp4'];
+    if (str_starts_with($h, 'RIFF') && substr($h, 8, 4) === 'WAVE') return ['family' => 'audio', 'ext' => 'wav'];
+    if (str_starts_with($h, 'ID3') || (ord($h[0]) === 0xFF && (ord($h[1]) & 0xE0) === 0xE0)) return ['family' => 'audio', 'ext' => 'mp3'];
+    $img = @getimagesize($path);
+    $imgExt = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif', IMAGETYPE_WEBP => 'webp'];
+    if ($img && isset($imgExt[$img[2]])) return ['family' => 'image', 'ext' => $imgExt[$img[2]]];
+    return null;
 }
 
 const FFMPEG = '/usr/bin/ffmpeg';
@@ -372,6 +381,20 @@ function handle_uploadMedia() {
         bad("That $mediaType is {$gotMb}MB - the max is {$maxMb}MB.", 400);
     }
 
+    // Real format from the file's own bytes, not the Content-Type the client
+    // claimed. A mismatch (e.g. a renamed text file claiming video/mp4)
+    // means either a bug or a deliberate attempt to get an unsafe file
+    // served from /media/ -- video and audio aren't re-encoded from a
+    // trusted decoder the way images are via GD, and when ffmpeg fails
+    // (always, on a host with no ffmpeg) the original bytes get kept as-is.
+    $sniffed = sniffMedia($tmpPath);
+    $compatible = $sniffed && (
+        ($mediaType === 'image' && $sniffed['family'] === 'image') ||
+        ($mediaType === 'video' && $sniffed['family'] === 'av') ||
+        ($mediaType === 'audio' && in_array($sniffed['family'], ['av', 'audio'], true)) // MediaRecorder audio is WebM/MP4
+    );
+    if (!$compatible) bad("That file doesn't look like a valid $mediaType.", 400);
+
     $timestamp = date('YmdHis');
     $random = bin2hex(random_bytes(8));
     $base = "{$uid}_{$mediaType}_{$timestamp}_{$random}";
@@ -381,8 +404,12 @@ function handle_uploadMedia() {
     $typeDir = $mediaDir . '/' . $mediaType;
     logMsg("uploadMedia: mediaDir=$mediaDir typeDir=$typeDir exists=" . (is_dir($typeDir) ? "yes" : "no"));
 
-    $inputExt = pathinfo($fileName, PATHINFO_EXTENSION);
-    $tempInput = "{$typeDir}/temp_{$base}.{$inputExt}";
+    // Staged outside the docroot, never under a web-served media/ path --
+    // the whole point of sniffing above is that this file isn't trustworthy
+    // yet, and it sits here while ffprobe/ffmpeg run (up to minutes).
+    $stageDir = dirname($CONFIG['db_path']) . '/tmp';
+    if (!is_dir($stageDir)) mkdir($stageDir, 0700, true);
+    $tempInput = "{$stageDir}/{$base}.{$sniffed['ext']}";
 
     if (!move_uploaded_file($tmpPath, $tempInput)) {
         logMsg("uploadMedia ERROR: move_uploaded_file failed. tmpPath=$tmpPath, tempInput=$tempInput");
@@ -403,7 +430,7 @@ function handle_uploadMedia() {
         }
     }
 
-    $originalExt = originalExtension($mimeType, $fileName);
+    $originalExt = $sniffed['ext'];
     $thumbnailPath = "{$typeDir}/thumb_{$base}.webp";
 
     if ($mediaType === 'image') {
