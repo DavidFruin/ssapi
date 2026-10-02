@@ -20,7 +20,9 @@
 // respond().
 
 function handle_getNotifications($pdo, $user) {
-    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    // Fixed page size here (unlike the post/comment lists) -- only offset
+    // needs clamping, via pageParams()'s own max(0, ...).
+    [, $offset] = pageParams();
     $limit = 25;
     // Every other type can't target yourself in the first place (you can't
     // follow/like/comment-notify yourself), but a mention can - self-mentions

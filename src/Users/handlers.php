@@ -28,9 +28,9 @@ function handle_getUsers($pdo, $user) {
 }
 
 function handle_getUserEmails($pdo, $user) {
-    $userIdsJson = $_POST['userIds'] ?? '[]';
-    $userIds = json_decode($userIdsJson, true);
-    if (!is_array($userIds) || empty($userIds)) respond(good(['emails' => []]));
+    // 500, not 100 -- a popular post's likers list can legitimately be long.
+    $userIds = jsonIdList('userIds', 500, true);
+    if (empty($userIds)) respond(good(['emails' => []]));
 
     $placeholders = implode(',', array_fill(0, count($userIds), '?'));
     $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");

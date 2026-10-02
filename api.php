@@ -155,6 +155,27 @@ function good($data = []) {
     return array_merge(['valid' => true], $data);
 }
 
+// Clamps limit/offset from $_POST. SQLite treats a negative LIMIT as "no
+// limit", so an unclamped value (e.g. limit=-1) could return every row
+// with everything hydrated in one call.
+function pageParams($default = 25, $max = 50) {
+    $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : $default;
+    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    return [max(1, min($max, $limit)), max(0, $offset)];
+}
+
+// Decodes a JSON array of scalar ids from $_POST[$key], deduplicated and
+// capped at $max -- an uncapped list has no size limit and can also exceed
+// SQLite's bound-variable limit, which turns into a 500 instead of a 400.
+function jsonIdList($key, $max = 100, $ints = false) {
+    $list = json_decode($_POST[$key] ?? '[]', true);
+    if (!is_array($list)) return [];
+    $list = array_values(array_unique(array_filter($list, 'is_scalar')));
+    if (count($list) > $max) bad("Too many ids (max $max)", 400);
+    if ($ints) return array_values(array_filter(array_map('intval', $list), fn($i) => $i > 0));
+    return array_map('strval', $list);
+}
+
 // ============== NOTIFICATIONS ==============
 // The one place a notification gets created: writes the row the bell icon
 // reads, then pushes it to whatever devices the recipient has enabled push

@@ -126,9 +126,8 @@ function handle_getPostById($pdo, $user) {
 }
 
 function handle_getPostPreviews($pdo, $user) {
-    $postIdsRaw = $_POST['postIds'] ?? '[]';
-    $postIds = json_decode($postIdsRaw, true) ?? [];
-    if (!is_array($postIds) || empty($postIds)) {
+    $postIds = jsonIdList('postIds', 100);
+    if (empty($postIds)) {
         respond(good(['previews' => []]));
         return;
     }
@@ -207,8 +206,7 @@ function handle_post($pdo, $user) {
 }
 
 function handle_getMyPosts($pdo, $user) {
-    $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 25;
-    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    [$limit, $offset] = pageParams();
     $uid = $user['sub'];
 
     $countStmt = $pdo->prepare('SELECT COUNT(*) FROM posts WHERE user_id = ?');
@@ -237,8 +235,7 @@ function handle_getUserPosts($pdo, $user) {
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0) bad('Invalid user ID', 400);
 
-    $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 25;
-    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    [$limit, $offset] = pageParams();
 
     $countStmt = $pdo->prepare('SELECT COUNT(*) FROM posts WHERE user_id = ?');
     $countStmt->execute([$targetId]);
@@ -267,8 +264,7 @@ function handle_getUserPosts($pdo, $user) {
 }
 
 function handle_fetchFollowedPosts($pdo, $user) {
-    $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 25;
-    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    [$limit, $offset] = pageParams();
     $uid = $user['sub'];
 
     $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');

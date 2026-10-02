@@ -45,8 +45,7 @@ function handle_createComment($pdo, $user) {
 
 function handle_getPostComments($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
-    $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : 25;
-    $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
+    [$limit, $offset] = pageParams();
     if (!$postId) bad('Missing post ID', 400);
 
     $stmt = $pdo->prepare('SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at DESC LIMIT ? OFFSET ?');
@@ -79,9 +78,8 @@ function handle_deleteComment($pdo, $user) {
 }
 
 function handle_getPostCommentCounts($pdo, $user) {
-    $postIdsJson = $_POST['postIds'] ?? '[]';
-    $postIds = json_decode($postIdsJson, true);
-    if (!is_array($postIds) || empty($postIds)) respond(good(['counts' => []]));
+    $postIds = jsonIdList('postIds', 100);
+    if (empty($postIds)) respond(good(['counts' => []]));
 
     $counts = [];
     foreach ($postIds as $postId) {
