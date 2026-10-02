@@ -1,5 +1,5 @@
 <?php
-// api.php - Simple Social API (max 3 levels indentation)
+// api.php - Simple Social API
 require_once __DIR__ . '/config.php';
 require_once __DIR__ . '/logging.php';
 require_once __DIR__ . '/webpush.php';
@@ -230,11 +230,6 @@ function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $acto
     }
 }
 
-// OTP_VERIFIED, attempt-limiting (attemptKeys/checkAttemptLimit/
-// recordFailedAttempt/clearAttempts) and validatePasswordRules moved to
-// src/Auth/handlers.php - auth-exclusive, unlike validateContent below
-// which posts/comments also use.
-
 // Printable ASCII plus the Latin-1 accented letters. No emoji, and no line
 // breaks -- posts render them as spaces anyway, so they only ever looked like
 // they worked.
@@ -262,9 +257,6 @@ function notifyMentions($pdo, $mentionIds, $actorId, $actorEmail, $postId) {
         createNotification($pdo, $id, $actorId, $actorEmail, 'mention', $postId);
     }
 }
-
-// PREVIEW_MAX_CHARS, resolveMentionTokens and truncatePreview moved to
-// src/Posts/handlers.php - only handle_getPostPreviews used them.
 
 // Resolves @[id] tokens to {id, email} for the API response, so clients
 // don't need a separate round trip. A deleted user's id still resolves --
@@ -316,12 +308,6 @@ function getCommentCountsForPostIds($pdo, array $postIds) {
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];
     return $counts;
 }
-
-// AUTH HANDLERS (handle_login, handle_logout, handle_refreshToken,
-// handle_getSessions, handle_revokeSession, handle_revokeAllOtherSessions,
-// handle_sendOTP, handle_verifyOTP, handle_resetPassword,
-// handle_sendRegisterOTP, handle_verifyRegisterOTP, handle_finishRegister)
-// moved to src/Auth/handlers.php, loaded via Composer's autoload.files.
 
 // ============== PROTECTED HANDLERS ==============
 function handle_deleteAccount($pdo, $user) {
@@ -421,44 +407,6 @@ function handle_deleteAccount($pdo, $user) {
 
     respond(good(['message' => 'Account deleted successfully']));
 }
-
-// handle_getMyFollowers, handle_getMyFollows moved to
-// src/Follows/handlers.php.
-
-// handle_getNotifications, getUnseenNotificationCount,
-// handle_getUnseenNotificationCount, handle_markNotificationsSeen moved to
-// src/Notifications/handlers.php.
-
-// getLikesForPostIds, postRowToApi, handle_getPostById, handle_getPostPreviews,
-// handle_post, handle_getMyPosts, handle_getUserPosts moved to
-// src/Posts/handlers.php.
-
-// handle_getUserInfo, handle_getUsers, handle_getUserEmails,
-// handle_getMyInfo, handle_updateTheme, handle_updateHand moved to
-// src/Users/handlers.php.
-
-// handle_getVapidPublicKey, handle_savePushSubscription,
-// handle_deletePushSubscription moved to src/Notifications/handlers.php.
-
-// handle_updateHand moved to src/Users/handlers.php.
-
-// handle_fetchFollowedPosts moved to src/Posts/handlers.php.
-
-// handle_likePost, handle_unlikePost, handle_getPostLikes moved to
-// src/Posts/handlers.php (post_likes is post-scoped data, not a separate
-// module -- see that file's header comment; corrects an omission in the
-// original split-backend-modules.md).
-
-// handle_followUser, handle_unfollowUser, handle_isFollowing moved to
-// src/Follows/handlers.php.
-
-// handle_deletePost moved to src/Posts/handlers.php. NOTE: its __DIR__
-// media-path resolution had to be adjusted there, since __DIR__ now means
-// src/Posts, not the repo root api.php lived in -- check any other moved
-// handler for the same trap before assuming a plain move is safe.
-
-// handle_createComment, handle_getPostComments, handle_deleteComment,
-// handle_getPostCommentCounts moved to src/Comments/handlers.php.
 
 // ============== DISPATCHER ==============
 $PUBLIC_ENDPOINTS = ['login', 'logout', 'refreshToken', 'sendOTP', 'verifyOTP', 'resetPassword', 'sendRegisterOTP', 'verifyRegisterOTP', 'finishRegister'];

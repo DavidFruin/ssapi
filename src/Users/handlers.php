@@ -3,8 +3,9 @@
 // per-account display preferences (theme, hand).
 //
 // Loaded via Composer's "files" autoload (see composer.json), same as
-// src/Auth/handlers.php - global-namespace functions, not classes. See
-// .claude/commands/split-backend-modules.md for why.
+// src/Auth/handlers.php - global-namespace functions, not classes: this
+// is a folder-level reorganization of the existing procedural api.php,
+// not a rewrite into an OOP structure.
 //
 // Depends on shared Core helpers still defined in api.php: bad(), good(),
 // respond().

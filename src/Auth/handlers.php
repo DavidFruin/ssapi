@@ -8,8 +8,7 @@
 // procedural api.php, not a rewrite into an OOP structure. Everything here
 // is still global-namespace, same calling convention as before the move,
 // so api.php's $HANDLERS table and every other module can call these
-// exactly as they could when the code lived inline. See
-// .claude/commands/split-backend-modules.md for why: namespacing/class
+// exactly as they could when the code lived inline. Namespacing/class
 // wrapping is a separate, larger decision than the one this pass makes.
 //
 // Depends on shared Core helpers still defined in api.php/auth.php: bad(),

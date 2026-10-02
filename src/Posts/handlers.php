@@ -4,10 +4,7 @@
 // than a separate module since they're exclusively post-scoped data and
 // share getLikesForPostIds()/postRowToApi() with every other posts
 // handler - splitting them out would just recreate the same coupling
-// through a different file. NOTE: this corrects an omission in the
-// original split-backend-modules.md module list, which named the other
-// six modules but never assigned likePost/unlikePost/getPostLikes
-// anywhere; they belong here, not left behind in api.php.
+// through a different file.
 //
 // Loaded via Composer's "files" autoload (see composer.json), same as
 // the other modules - global-namespace functions, not classes.
