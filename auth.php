@@ -41,9 +41,13 @@ function jwtEncode($payload) {
     return "$header.$payloadStr.$sig";
 }
 
-// Verifies signature and expiry. Returns the payload, or false.
-// This is the only decode path any authorisation decision may use.
-function jwtVerify($jwt) {
+// Verifies signature and (unless $allowExpired) expiry. Returns the
+// payload, or false. This is the only decode path any authorisation
+// decision may use. $allowExpired exists for logout: the session id is
+// still only trustworthy once the signature is checked, but a token
+// that expired minutes ago is still a legitimate reason to revoke its
+// session.
+function jwtVerify($jwt, $allowExpired = false) {
     global $CONFIG;
     $secret = $CONFIG['jwt_secret'] ?? null;
     if (!$secret || !$jwt) return false;
@@ -57,19 +61,8 @@ function jwtVerify($jwt) {
 
     $payload = json_decode(b64urlDecode($payloadStr), true);
     if (!$payload || !isset($payload['sub'])) return false;
-    if (isset($payload['exp']) && time() > $payload['exp']) return false;
+    if (!$allowExpired && isset($payload['exp']) && time() > $payload['exp']) return false;
     return $payload;
-}
-
-// Reads a token's claims WITHOUT verifying anything. Only for cases where
-// the claim is a hint rather than a permission - logout uses it to work out
-// which session to revoke, and revoking someone else's session on a forged
-// token is harmless since the revoke is scoped by the signature check anyway.
-function jwtClaimsUnverified($jwt) {
-    $parts = explode('.', $jwt);
-    if (count($parts) !== 3) return false;
-    $payload = json_decode(b64urlDecode($parts[1]), true);
-    return $payload ?: false;
 }
 
 function bearerToken() {

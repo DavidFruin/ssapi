@@ -14,7 +14,7 @@
 //
 // Depends on shared Core helpers still defined in api.php/auth.php: bad(),
 // good(), respond(), db(), logMsg(), requireAuth(), bearerToken(),
-// jwtClaimsUnverified(), sessionCreate(), sessionRefresh(), sessionRevoke(),
+// jwtVerify(), sessionCreate(), sessionRefresh(), sessionRevoke(),
 // sessionRevokeAllForUser(), refreshTokenHash(). Those are cross-module
 // infrastructure, not Auth-specific, so they aren't moving here.
 
@@ -138,13 +138,15 @@ function handle_login($pdo) {
 // Public: an expired access token must still be able to log itself out, and
 // the session id comes from the token's claims rather than from the caller.
 function handle_logout($pdo) {
-    $claims = jwtClaimsUnverified(bearerToken());
+    // allowExpired=true: an access token that aged out minutes ago is still
+    // a legitimate reason to revoke its session, and the signature check
+    // (unlike the old jwtClaimsUnverified() path this replaces) means the
+    // session id is actually trustworthy, not just a hint.
+    $claims = jwtVerify(bearerToken(), true);
     if ($claims && !empty($claims['sid'])) {
-        // Scoped by user id as well, so a forged token can't revoke someone
-        // else's session - it would have to name a real (sid, sub) pair.
-        $stmt = $pdo->prepare('UPDATE sessions SET revoked_at = ?
-            WHERE id = ? AND user_id = ? AND revoked_at IS NULL');
-        $stmt->execute([date('Y-m-d H:i:s'), $claims['sid'], $claims['sub'] ?? 0]);
+        $stmt = $pdo->prepare('SELECT id FROM sessions WHERE id = ? AND user_id = ? AND revoked_at IS NULL');
+        $stmt->execute([$claims['sid'], $claims['sub']]);
+        if ($stmt->fetchColumn()) sessionRevoke($pdo, $claims['sid']);
         logMsg("LOGOUT: session={$claims['sid']}");
     }
     respond(good(['message' => 'Logged out']));
