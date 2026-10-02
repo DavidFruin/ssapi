@@ -373,7 +373,7 @@ function handle_uploadMedia() {
     }
 
     $timestamp = date('YmdHis');
-    $random = sprintf('%06d', mt_rand(0, 999999));
+    $random = bin2hex(random_bytes(8));
     $base = "{$uid}_{$mediaType}_{$timestamp}_{$random}";
 
     ensureMediaDir($uid, $mediaType);

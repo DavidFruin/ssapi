@@ -216,7 +216,7 @@ function handle_sendOTP($pdo) {
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) bad('No account found with this email', 404);
 
-    $otp = sprintf("%06d", mt_rand(0, 999999));
+    $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
     $stmt->execute([$otp, time() + 600, $row['id']]);
 
@@ -290,7 +290,7 @@ function handle_sendRegisterOTP($pdo) {
     $stmt->execute([$email]);
     if ($stmt->fetchColumn()) bad('Email already registered', 400);
 
-    $otp = sprintf("%06d", mt_rand(0, 999999));
+    $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('DELETE FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
     $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated) VALUES (?, ?, ?, ?)');
