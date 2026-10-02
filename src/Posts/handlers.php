@@ -167,10 +167,14 @@ function handle_post($pdo, $user) {
     $rawMedia = $_POST['mediaUrl'] ?? null;
     if ($rawMedia === 'null' || $rawMedia === '') $rawMedia = null;
     if ($rawMedia !== null) {
-        $stmt = $pdo->prepare('SELECT id FROM media WHERE path = ? AND user_id = ?');
+        // post_id IS NULL: without this, a mediaUrl already attached to
+        // another post still passed this check, so two posts could end up
+        // sharing one file -- deleting either one then unlinked it out
+        // from under the other.
+        $stmt = $pdo->prepare('SELECT id FROM media WHERE path = ? AND user_id = ? AND post_id IS NULL');
         $stmt->execute([$rawMedia, $uid]);
         $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
-        if (!$mediaRow) bad('Invalid mediaUrl or not owned by user', 400);
+        if (!$mediaRow) bad('That media is invalid, not yours, or already attached to another post', 400);
     }
 
     // Two posts made in the same second used to get the same id
@@ -386,27 +390,45 @@ function handle_deletePost($pdo, $user) {
     if (!$row) bad('Post not found', 404);
     if ((int)$row['user_id'] != $user['sub']) bad('You can only delete your own posts', 403);
 
-    $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$postId]);
-    $pdo->prepare('DELETE FROM post_likes WHERE post_id = ?')->execute([$postId]);
-    $pdo->prepare('DELETE FROM notifications WHERE post_id = ?')->execute([$postId]);
+    // Filesystem unlinks happen after commit, not during -- a failed
+    // unlink() must never roll back DB rows that already deleted cleanly,
+    // and a failed DB statement must never leave a file deleted out from
+    // under a row that's still there.
+    $filesToUnlink = [];
 
-    $mediaUrl = $row['media_url'];
-    if (!empty($mediaUrl) && $mediaUrl !== 'null') {
-        if (strpos($mediaUrl, '..') === false && strpos($mediaUrl, '/') === 0) {
-            $stmt = $pdo->prepare('SELECT id, path FROM media WHERE path = ? AND user_id = ?');
-            $stmt->execute([$mediaUrl, $user['sub']]);
-            $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
-            if ($mediaRow) {
-                $mediaFile = __DIR__ . '/../../' . ltrim($mediaRow['path'], '/');
-                if (file_exists($mediaFile)) unlink($mediaFile);
-                if (strpos($mediaRow['path'], '/video/') !== false) {
-                    $thumbFile = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $mediaFile);
-                    if (file_exists($thumbFile)) unlink($thumbFile);
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$postId]);
+        $pdo->prepare('DELETE FROM post_likes WHERE post_id = ?')->execute([$postId]);
+        $pdo->prepare('DELETE FROM notifications WHERE post_id = ?')->execute([$postId]);
+        // Previously left behind entirely -- a deleted post's comments
+        // stayed in the table forever, orphaned.
+        $pdo->prepare('DELETE FROM comments WHERE post_id = ?')->execute([$postId]);
+
+        $mediaUrl = $row['media_url'];
+        if (!empty($mediaUrl) && $mediaUrl !== 'null') {
+            if (strpos($mediaUrl, '..') === false && strpos($mediaUrl, '/') === 0) {
+                $stmt = $pdo->prepare('SELECT id, path FROM media WHERE path = ? AND user_id = ?');
+                $stmt->execute([$mediaUrl, $user['sub']]);
+                $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
+                if ($mediaRow) {
+                    $mediaFile = __DIR__ . '/../../' . ltrim($mediaRow['path'], '/');
+                    $filesToUnlink[] = $mediaFile;
+                    if (strpos($mediaRow['path'], '/video/') !== false) {
+                        $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $mediaFile);
+                    }
+                    $pdo->prepare('DELETE FROM media WHERE id = ?')->execute([$mediaRow['id']]);
                 }
-                $stmt = $pdo->prepare('DELETE FROM media WHERE id = ?');
-                $stmt->execute([$mediaRow['id']]);
             }
         }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+
+    foreach ($filesToUnlink as $file) {
+        if (file_exists($file)) unlink($file);
     }
 
     respond(good(['deleted' => true]));

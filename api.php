@@ -328,49 +328,91 @@ function handle_deleteAccount($pdo, $user) {
     if (!$hash || !password_verify($password, $hash)) bad('Incorrect password', 401);
 
     $uid = $user['sub'];
-    $stmt = $pdo->prepare('DELETE FROM notifications WHERE recipient_id = ? OR actor_id = ?');
-    $stmt->execute([$uid, $uid]);
 
-    $stmt = $pdo->prepare('SELECT id, follows FROM users WHERE id != ?');
-    $stmt->execute([$uid]);
-    while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        $follows = $row['follows'] ? json_decode($row['follows'], true) : [];
-        if (is_array($follows)) {
-            $updated = array_filter($follows, fn($f) => (is_array($f) ? $f['id'] : $f) != $uid);
-            $stmtUpdate = $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?');
-            $stmtUpdate->execute([json_encode(array_values($updated)), $row['id']]);
+    // Filesystem unlinks happen after commit (S13) -- same reasoning as
+    // handle_deletePost: a failed unlink() must never roll back DB rows
+    // that already deleted cleanly, and vice versa.
+    $filesToUnlink = [];
+
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('SELECT id FROM posts WHERE user_id = ?');
+        $stmt->execute([$uid]);
+        $ownPostIds = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id');
+
+        // recipient_id/actor_id cover every notification this user sent or
+        // received directly. post_id covers the rest: e.g. bob comments on
+        // alice's post mentioning carol creates a 'mention' notification to
+        // carol, naming neither alice nor bob as recipient/actor -- if
+        // alice deletes her account, that row would otherwise be left
+        // pointing at a post_id that no longer exists.
+        $notifParams = [$uid, $uid];
+        $postIdFilter = '';
+        if ($ownPostIds) {
+            $placeholders = implode(',', array_fill(0, count($ownPostIds), '?'));
+            $postIdFilter = " OR post_id IN ($placeholders)";
+            $notifParams = array_merge($notifParams, $ownPostIds);
         }
+        $pdo->prepare("DELETE FROM notifications WHERE recipient_id = ? OR actor_id = ?$postIdFilter")
+            ->execute($notifParams);
+
+        $stmt = $pdo->prepare('SELECT id, follows FROM users WHERE id != ?');
+        $stmt->execute([$uid]);
+        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+            $follows = $row['follows'] ? json_decode($row['follows'], true) : [];
+            if (is_array($follows)) {
+                $updated = array_filter($follows, fn($f) => (is_array($f) ? $f['id'] : $f) != $uid);
+                $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?')
+                    ->execute([json_encode(array_values($updated)), $row['id']]);
+            }
+        }
+
+        // This user's own posts, and every like anyone gave them; plus
+        // every like this user gave out on someone else's post.
+        if ($ownPostIds) {
+            $placeholders = implode(',', array_fill(0, count($ownPostIds), '?'));
+            $pdo->prepare("DELETE FROM post_likes WHERE post_id IN ($placeholders)")->execute($ownPostIds);
+            // Comments other people left ON this user's posts -- previously
+            // left behind entirely once the post itself was gone.
+            $pdo->prepare("DELETE FROM comments WHERE post_id IN ($placeholders)")->execute($ownPostIds);
+        }
+        $pdo->prepare('DELETE FROM posts WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM post_likes WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM comments WHERE user_id = ?')->execute([$uid]);
+
+        $stmt = $pdo->prepare('SELECT path FROM media WHERE user_id = ?');
+        $stmt->execute([$uid]);
+        foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+            if (strpos($r['path'], '..') !== false) continue;
+            $f = __DIR__ . $r['path'];
+            $filesToUnlink[] = $f;
+            $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $f);
+        }
+        $pdo->prepare('DELETE FROM media WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$uid]);
+        $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
     }
 
-    // This user's own posts, and every like anyone gave them; plus every
-    // like this user gave out on someone else's post.
-    $stmt = $pdo->prepare('SELECT id FROM posts WHERE user_id = ?');
-    $stmt->execute([$uid]);
-    $ownPostIds = array_column($stmt->fetchAll(PDO::FETCH_ASSOC), 'id');
-    if ($ownPostIds) {
-        $placeholders = implode(',', array_fill(0, count($ownPostIds), '?'));
-        $pdo->prepare("DELETE FROM post_likes WHERE post_id IN ($placeholders)")->execute($ownPostIds);
+    foreach ($filesToUnlink as $file) {
+        if (file_exists($file)) @unlink($file);
     }
-    $pdo->prepare('DELETE FROM posts WHERE user_id = ?')->execute([$uid]);
-    $pdo->prepare('DELETE FROM post_likes WHERE user_id = ?')->execute([$uid]);
-
-    $stmt = $pdo->prepare('DELETE FROM comments WHERE user_id = ?');
-    $stmt->execute([$uid]);
-    $stmt = $pdo->prepare('SELECT path FROM media WHERE user_id = ?');
-    $stmt->execute([$uid]);
-    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-        $f = __DIR__ . $r['path'];
-        if (strpos($r['path'], '..') === false && file_exists($f)) @unlink($f);
-        $tf = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $f);
-        if (file_exists($tf)) @unlink($tf);
-    }
-    $pdo->prepare('DELETE FROM media WHERE user_id = ?')->execute([$uid]);
+    // rmdir only succeeds on an empty directory, so the old chain
+    // (@rmdir(image) && @rmdir(video) && ...) stopped at the first type
+    // folder that didn't exist on this particular user (most users don't
+    // have all three), short-circuiting past the rest -- the user's media
+    // folder was then never removed. Each rmdir now stands alone.
     $mediaDir = __DIR__ . '/media/' . $uid;
-    if (is_dir($mediaDir)) @rmdir($mediaDir . '/image') && @rmdir($mediaDir . '/video') && @rmdir($mediaDir . '/audio') && @rmdir($mediaDir);
-    $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
-    $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$uid]);
-    $stmt = $pdo->prepare('DELETE FROM users WHERE id = ?');
-    $stmt->execute([$uid]);
+    foreach (['image', 'video', 'audio'] as $type) {
+        $typeDir = "$mediaDir/$type";
+        if (is_dir($typeDir)) @rmdir($typeDir);
+    }
+    if (is_dir($mediaDir)) @rmdir($mediaDir);
+
     respond(good(['message' => 'Account deleted successfully']));
 }
 
