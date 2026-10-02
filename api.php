@@ -62,15 +62,46 @@ function logError($action, $error) {
     logApiError($action, $error);
 }
 
+// Work queued to run AFTER the response has already been sent to the
+// client -- currently just push notifications (P2), which used to run
+// serially inside the request (fresh ECDH key generation, encryption, and
+// a blocking curl per device, before the caller ever saw a response).
+$DEFERRED = [];
+function defer(callable $fn) { global $DEFERRED; $DEFERRED[] = $fn; }
+
+function runDeferred() {
+    global $DEFERRED;
+    $jobs = $DEFERRED;
+    $DEFERRED = [];
+    foreach ($jobs as $fn) {
+        try { $fn(); } catch (Throwable $e) { logMsg('deferred failed: ' . $e->getMessage()); }
+    }
+}
+
 function respond($data, $code = 200) {
-    global $action;
+    global $action, $DEFERRED;
     $success = ($code >= 200 && $code < 400) || ($data['valid'] ?? false);
     $message = $data['message'] ?? ($data['error'] ?? '');
     logResponse($action ?? 'unknown', $success, $message);
+    $body = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     ob_clean();
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    header('Content-Length: ' . strlen($body));
+    echo $body;
+    if (!empty($DEFERRED)) {
+        while (ob_get_level() > 0) ob_end_flush();
+        flush();
+        // PHP-FPM (react.davidfruin.com): the client is released right
+        // here. Under mod_fcgid (app/dev), Content-Length + flush() above
+        // lets the client finish reading the response, but this worker
+        // process stays busy until the deferred jobs below finish -- S1's
+        // tighter curl timeouts (2s connect / 4s total) cap how long that
+        // can drag on.
+        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+        ignore_user_abort(true);
+        runDeferred();
+    }
     exit;
 }
 
@@ -141,13 +172,13 @@ function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $p
         $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $postId, $now]);
     }
 
-    try {
-        pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId);
-    } catch (Exception $e) {
-        logMsg("push failed: " . $e->getMessage());
-    } catch (Error $e) {
-        logMsg("push failed: " . $e->getMessage());
-    }
+    // Deferred (P2) rather than run inline: each device is a fresh ECDH key
+    // generation, encryption and a blocking curl, all before respond()
+    // used to be reachable. defer()'s own try/catch (runDeferred) is what
+    // now does the job the try/catch here used to do -- a dead subscription
+    // or a slow push service must never affect the response the caller
+    // already got.
+    defer(fn() => pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId));
 }
 
 function notificationText($actorEmail, $type) {
