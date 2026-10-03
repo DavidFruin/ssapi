@@ -77,3 +77,8 @@ $CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BO
 // rather than quietly creating userdata.db where it's web-reachable.
 $CONFIG['db_path'] = $privateDir . '/userdata.db';
 $CONFIG['log_dir'] = $privateDir . '/logs';
+
+// Uploaded media lives in the web root (public_html/media), next to -- not inside -- this code.
+// Default fits the split layout (domain/ssapi + domain/public_html); MEDIA_DIR in private/.env
+// overrides it, e.g. for the old layout where the code sits in public_html itself.
+$CONFIG['media_dir'] = rtrim(getenv('MEDIA_DIR') ?: dirname(__DIR__) . '/public_html/media', '/');

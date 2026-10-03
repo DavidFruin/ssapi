@@ -27,7 +27,10 @@ function db() {
     static $pdo = null;
     if ($pdo) return $pdo;
     global $CONFIG;
-    $dbPath = $CONFIG['db_path'] ?? __DIR__ . '/userdata.db';
+    // No fallback: config.php always sets this now (S11), and a
+    // code-relative default here would silently resurrect the exact
+    // docroot-fallback behavior S11 removed, just one layer further down.
+    $dbPath = $CONFIG['db_path'];
     // Fails closed (S11) instead of silently creating userdata.db wherever
     // dirname($dbPath) happens to resolve to -- config.php no longer has a
     // docroot fallback, so a missing private/ means something is actually
@@ -43,6 +46,17 @@ function db() {
     $pdo->exec('PRAGMA busy_timeout = 5000');
     ensureSchema($pdo);
     return $pdo;
+}
+
+// Maps a stored media URL path ("/media/<uid>/<type>/<file>") to its file
+// on disk under $CONFIG['media_dir'] (deploy layout: L1). Returns null for
+// anything that isn't a plain path under /media/ -- callers skip rather
+// than guess, since a wrong path here means either corrupt data or a
+// deliberate attempt to make the server touch a file outside media/.
+function mediaFilePath($urlPath) {
+    global $CONFIG;
+    if (!is_string($urlPath) || !str_starts_with($urlPath, '/media/') || str_contains($urlPath, '..')) return null;
+    return $CONFIG['media_dir'] . substr($urlPath, strlen('/media'));
 }
 
 // Runs migration1(), migration2(), etc. in order, but only the ones newer

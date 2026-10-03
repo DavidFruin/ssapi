@@ -3,8 +3,9 @@
 
 if (!defined('LOG_DIR')) {
     global $CONFIG;
-    $cfgLogDir = $CONFIG['log_dir'] ?? null;
-    define('LOG_DIR', $cfgLogDir ?: (__DIR__ . '/logs'));
+    // No fallback: config.php always sets this now (S11). A code-relative
+    // default here would resurrect the exact docroot-fallback S11 removed.
+    define('LOG_DIR', $CONFIG['log_dir']);
 }
 define('LOG_MAX_SIZE', 5 * 1024 * 1024); // 5MB
 define('LOG_ROTATE_COUNT', 3);

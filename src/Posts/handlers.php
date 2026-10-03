@@ -396,10 +396,16 @@ function handle_deletePost($pdo, $user) {
                 $stmt->execute([$mediaUrl, $user['sub']]);
                 $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($mediaRow) {
-                    $mediaFile = __DIR__ . '/../../' . ltrim($mediaRow['path'], '/');
-                    $filesToUnlink[] = $mediaFile;
-                    if (strpos($mediaRow['path'], '/video/') !== false) {
-                        $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $mediaFile);
+                    // mediaFilePath() (schema.php, deploy layout: L1) maps
+                    // the stored URL path onto $CONFIG['media_dir'] -- a
+                    // code-relative path broke the moment this code could
+                    // live outside public_html entirely.
+                    $mediaFile = mediaFilePath($mediaRow['path']);
+                    if ($mediaFile !== null) {
+                        $filesToUnlink[] = $mediaFile;
+                        if (strpos($mediaRow['path'], '/video/') !== false) {
+                            $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $mediaFile);
+                        }
                     }
                     $pdo->prepare('DELETE FROM media WHERE id = ?')->execute([$mediaRow['id']]);
                 }

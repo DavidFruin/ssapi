@@ -16,8 +16,10 @@
 // Two things could NOT just be copy-pasted from media.php as-is:
 //
 // 1. __DIR__ in getMediaDir() meant media.php's directory (repo root).
-//    Fixed the same way src/Posts/handlers.php's deletePost fix was:
-//    __DIR__ . '/../../media/...' instead of __DIR__ . '/media/...'.
+//    Originally fixed with a __DIR__ . '/../../media/...' relative path;
+//    now reads $CONFIG['media_dir'] instead (deploy layout: L1) since a
+//    code-relative path broke again the moment this code could live
+//    outside public_html entirely, not just one level deeper inside it.
 //
 // 2. $allowedImageTypes/$allowedVideoTypes/$allowedAudioTypes/$maxSizes
 //    were plain global variables assigned at the top level of media.php.
@@ -66,7 +68,10 @@ function handle_getMediaLimits($pdo, $user) {
 }
 
 function getMediaDir($userId) {
-    return __DIR__ . '/../../media/' . $userId;
+    global $CONFIG;
+    // $CONFIG['media_dir'] (deploy layout: L1), not a path relative to this
+    // file -- that broke the moment the code moved out of public_html.
+    return $CONFIG['media_dir'] . '/' . $userId;
 }
 
 function ensureMediaDir($userId, $type) {

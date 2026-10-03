@@ -375,8 +375,12 @@ function handle_deleteAccount($pdo, $user) {
         $stmt = $pdo->prepare('SELECT path FROM media WHERE user_id = ?');
         $stmt->execute([$uid]);
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            if (strpos($r['path'], '..') !== false) continue;
-            $f = __DIR__ . $r['path'];
+            // mediaFilePath() (schema.php, deploy layout: L1) maps the
+            // stored URL path onto $CONFIG['media_dir'] and already rejects
+            // a '..'-bearing path -- a code-relative path broke the moment
+            // this code could live outside public_html entirely.
+            $f = mediaFilePath($r['path']);
+            if ($f === null) continue;
             $filesToUnlink[] = $f;
             $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $f);
         }
@@ -398,7 +402,9 @@ function handle_deleteAccount($pdo, $user) {
     // folder that didn't exist on this particular user (most users don't
     // have all three), short-circuiting past the rest -- the user's media
     // folder was then never removed. Each rmdir now stands alone.
-    $mediaDir = __DIR__ . '/media/' . $uid;
+    // getMediaDir() (src/Media/handlers.php, deploy layout: L1) reads
+    // $CONFIG['media_dir'] instead of a path relative to this file.
+    $mediaDir = getMediaDir($uid);
     foreach (['image', 'video', 'audio'] as $type) {
         $typeDir = "$mediaDir/$type";
         if (is_dir($typeDir)) @rmdir($typeDir);
