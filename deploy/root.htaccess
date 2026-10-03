@@ -1,0 +1,80 @@
+# public_html/.htaccess -- canonical copy: ssapi/deploy/root.htaccess. Deployed on purpose,
+# never by an app deploy. Layout: see war-table Inbox/deploy-layout-plan.md.
+#   /api.php, /media.php   stubs into ../ssapi (backend code is outside the web root)
+#   /app/                  frontend build, served at "/" via the rewrites below
+#   /media/                uploads (data only, never executable)
+#   /downloads/            static downloads (APK etc.)
+Options -Indexes
+
+# Authorization header passthrough (mod_fcgid hosts; PHP-FPM hosts also need CGIPassAuth On in the vhost).
+SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
+
+# Only the entry stubs may execute. index.php = maintenance mode (see index.maintenance.php).
+<FilesMatch "\.(php\d?|phtml|phar|inc)$">
+    Require all denied
+</FilesMatch>
+<FilesMatch "^(api|media|index)\.php$">
+    Require all granted
+</FilesMatch>
+
+# Never serve data, logs, env or tooling files, wherever they end up by mistake.
+<FilesMatch "(\.(db|db-wal|db-shm|sqlite|log|env|lock|md)|^\.(env.*|git.*|htaccess)|^composer\.json)$">
+    Require all denied
+</FilesMatch>
+
+<IfModule mod_headers.c>
+  Header always set X-Content-Type-Options "nosniff"
+  Header always set X-Frame-Options "DENY"
+  Header always set Referrer-Policy "strict-origin-when-cross-origin"
+  Header always set Permissions-Policy "camera=(self), microphone=(self), geolocation=()"
+  Header always set Content-Security-Policy-Report-Only "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self' data:; connect-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'"
+
+  # Hashed build assets, icons and per-upload media never change under the same URL.
+  # REQUEST_URI is checked with and without the internal /app/ prefix.
+  <If "%{REQUEST_URI} =~ m#^/(app/)?(assets|pwa-icons)/|^/media/#">
+    Header set Cache-Control "public, max-age=31536000, immutable"
+  </If>
+  # Must always revalidate, or a reload can load stale JS after a deploy.
+  <FilesMatch "^(index\.html|sw\.js|manifest\.json|android-version\.json)$">
+    Header set Cache-Control "no-cache"
+  </FilesMatch>
+</IfModule>
+
+<IfModule mod_deflate.c>
+  AddOutputFilterByType DEFLATE text/html text/css application/javascript application/json image/svg+xml
+</IfModule>
+
+<IfModule mod_mime.c>
+  AddType application/vnd.android.package-archive .apk
+</IfModule>
+
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+  # Maintenance mode: active only while a file named index.php exists.
+  RewriteCond %{DOCUMENT_ROOT}/index.php -f
+  RewriteCond %{REQUEST_URI} !^/index\.php$
+  RewriteRule ^ index.php [L]
+
+  # Defence in depth: none of these should exist in the web root at all.
+  RewriteRule ^(vendor|src|logs|private|tmp|ssapi)(/|$) - [F,L]
+  # Uploaded media is data, never code or active content.
+  RewriteRule ^media/.*\.(php\d?|phtml|phar|html?|svg|js|mjs)$ - [F,L]
+
+  # Served as they are.
+  RewriteRule ^(api|media|index)\.php$ - [L]
+  RewriteRule ^(media|downloads)/ - [L]
+
+  # Already rewritten into the frontend folder (second pass).
+  RewriteRule ^app/ - [L]
+
+  # A real frontend file: /assets/x.js -> app/assets/x.js, /sw.js -> app/sw.js (URL stays /sw.js,
+  # so the service worker still controls the whole site).
+  RewriteCond %{DOCUMENT_ROOT}/app/$1 -f
+  RewriteRule ^(.+)$ app/$1 [L]
+
+  # Everything else is a frontend page (React Router paths like /feed).
+  RewriteRule ^ app/index.html [L]
+</IfModule>
