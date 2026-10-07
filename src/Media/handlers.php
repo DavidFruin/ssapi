@@ -402,14 +402,15 @@ function acquireMediaSlot(int $waitSeconds = 20) {
 // other path, and -max_pixels makes the decoder itself refuse oversized
 // frames (a second line behind classifyMedia's header check), and
 // -codec_whitelist makes it refuse any decoder outside the allow-list.
-function runFfmpeg(string $inputPath, array $outputArgs): bool {
+// $inputArgs go before -i (e.g. a -ss seek).
+function runFfmpeg(string $inputPath, array $outputArgs, array $inputArgs = []): bool {
     global $CONFIG;
     if (!function_exists('exec')) {
         logMsg("ffmpeg skipped: exec() is disabled");
         return false;
     }
     @set_time_limit(600);
-    $args = array_merge([
+    $args = array_merge($inputArgs, [
         '-max_pixels', (string)$CONFIG['media_max_pixels'],
         '-codec_whitelist', FFMPEG_DECODER_WHITELIST,
         '-threads', '2',   // decoder threads; leaves cores for the website
@@ -589,15 +590,21 @@ function processVideo($inputPath, $outputBase, $thumbnailPath, $probe = null) {
         return false;
     }
 
-    createVideoThumbnail("$outputBase.mp4", $thumbnailPath);
+    $duration = min(probeDuration($probe), (float)$CONFIG['media_max_seconds']);
+    createVideoThumbnail("$outputBase.mp4", $thumbnailPath, $duration);
     logMsg("processVideo SUCCESS: saved $outputBase.mp4");
     return 'mp4';
 }
 
 // ffmpeg grabs the first frame as PNG; GD converts it to WebP.
-function createVideoThumbnail($videoPath, $thumbnailPath) {
+// The poster: a frame from 0.5 s in (or halfway through a shorter clip),
+// since the very first frame is often black. Seeking before -i is fast and
+// lands on the nearest frame. Unknown duration: the first frame.
+function createVideoThumbnail($videoPath, $thumbnailPath, $duration = 0.0) {
     $png = "$thumbnailPath.png";
-    if (!runFfmpeg($videoPath, ['-frames:v', '1', '-vf', ffmpegScale(640), ...FFMPEG_STRIP_METADATA, $png])) return false;
+    $seek = $duration > 0 ? min(0.5, $duration / 2) : 0;
+    $inputArgs = $seek > 0 ? ['-ss', sprintf('%.2f', $seek)] : [];
+    if (!runFfmpeg($videoPath, ['-frames:v', '1', '-vf', ffmpegScale(640), ...FFMPEG_STRIP_METADATA, $png], $inputArgs)) return false;
     $img = @imagecreatefrompng($png);
     @unlink($png);
     if (!$img) return false;
@@ -829,8 +836,9 @@ function handle_uploadMedia() {
     $path = "/media/{$uid}/{$mediaType}/{$filename}";
     $pdo->beginTransaction();
     try {
-        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes]);
+        $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath]);
         $mediaId = $pdo->lastInsertId();
         $moved = [];
         foreach ($moves as $from => $to) {
