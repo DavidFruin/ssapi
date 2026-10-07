@@ -47,8 +47,12 @@ function handle_getPostComments($pdo, $user) {
     if (!$postId) bad('Missing post ID', 400);
 
     // Comments by users hidden from the viewer (blocked either way, or
-    // frozen) are left out of both the page and the total.
+    // frozen), and comments the viewer reported, are left out of both the
+    // page and the total.
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'c.user_id');
+    [$rf, $rp] = reportedFilter($pdo, $user['sub'], 'comment', 'c.id');
+    $hf .= $rf;
+    $hp = array_merge($hp, $rp);
     $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ?$hf ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
     $stmt->execute(array_merge([$postId], $hp, [$limit, $offset]));
     $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);

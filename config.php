@@ -69,6 +69,12 @@ $CONFIG['vapid_private'] = getenv('VAPID_PRIVATE_KEY') ?: ($_ENV['VAPID_PRIVATE_
 // actually set it -- it fell back to its own hard-coded default every time.
 $CONFIG['vapid_subject'] = getenv('VAPID_SUBJECT') ?: ($_ENV['VAPID_SUBJECT'] ?? null);
 
+// Moderation (access-and-public-launch plan, Step 1B). Reports are emailed
+// to ADMIN_REPORT_EMAIL; CONTACT_EMAIL is shown to suspended users. Unset
+// means no report email (logged as a warning) and no address in the message.
+$CONFIG['admin_report_email'] = getenv('ADMIN_REPORT_EMAIL') ?: '';
+$CONFIG['contact_email'] = getenv('CONTACT_EMAIL') ?: '';
+
 // Test-only: point Expo push (the phone app) at a local mock instead of
 // exp.host. Leave unset in production, where the real service is used and only
 // HTTPS is allowed.

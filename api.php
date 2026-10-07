@@ -189,6 +189,29 @@ function isHiddenFrom($pdo, $viewerId, $userId) {
     return in_array((int)$userId, hiddenUserIds($pdo, $viewerId), true);
 }
 
+// Ids of the posts or comments ($type) the viewer has reported. Reporting
+// hides that content from the reporter straight away (one of the ways
+// Apple's "filter objectionable content" requirement is met).
+function reportedByViewer($pdo, $viewerId, $type) {
+    static $cache = [];
+    $key = (int)$viewerId . ':' . $type;
+    if (isset($cache[$key])) return $cache[$key];
+    $s = $pdo->prepare('SELECT target_id FROM reports WHERE reporter_id = ? AND target_type = ?');
+    $s->execute([$viewerId, $type]);
+    return $cache[$key] = array_map('strval', $s->fetchAll(PDO::FETCH_COLUMN));
+}
+
+// Same shape as hiddenFilter(), for the viewer's reported posts/comments.
+function reportedFilter($pdo, $viewerId, $type, $column) {
+    $ids = reportedByViewer($pdo, $viewerId, $type);
+    if (!$ids) return ['', []];
+    return [" AND $column NOT IN (" . implode(',', array_fill(0, count($ids), '?')) . ')', $ids];
+}
+
+function isReportedBy($pdo, $viewerId, $type, $id) {
+    return in_array((string)$id, reportedByViewer($pdo, $viewerId, $type), true);
+}
+
 // ============== NOTIFICATIONS ==============
 // The one place a notification gets created: writes the row the bell icon
 // reads, then pushes it to whatever devices the recipient has enabled push
@@ -394,8 +417,9 @@ function getCommentCountsForPostIds($pdo, array $postIds, $viewerId = null) {
     if (!$postIds) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
     [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
-    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf GROUP BY post_id");
-    $stmt->execute(array_merge(array_values($postIds), $hp));
+    [$rf, $rp] = $viewerId ? reportedFilter($pdo, $viewerId, 'comment', 'id') : ['', []];
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf$rf GROUP BY post_id");
+    $stmt->execute(array_merge(array_values($postIds), $hp, $rp));
     $counts = array_fill_keys($postIds, 0);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];
     return $counts;
@@ -535,6 +559,7 @@ $HANDLERS = [
     'deletePushSubscription' => 'handle_deletePushSubscription',
     'saveExpoPushToken' => 'handle_saveExpoPushToken',
     'deleteExpoPushToken' => 'handle_deleteExpoPushToken',
+    'reportContent' => 'handle_reportContent',
     'blockUser' => 'handle_blockUser', 'unblockUser' => 'handle_unblockUser',
     'getBlockedUsers' => 'handle_getBlockedUsers',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',

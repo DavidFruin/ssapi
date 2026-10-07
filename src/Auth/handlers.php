@@ -76,15 +76,16 @@ function clearAttempts($pdo, $keys) {
 // counter. Guards sendOTP/sendRegisterOTP, which are public and send a real
 // email on every call -- unthrottled, either can be used to flood any
 // inbox, which has already cost real mail deliverability once (see the TUI
-// registration note in simple-social).
-function throttleSend($pdo, $key, $limit) {
+// registration note in simple-social). Also used with a longer window and
+// its own message for other per-user caps (reports: 20 a day).
+function throttleSend($pdo, $key, $limit, $window = ATTEMPT_WINDOW, $message = 'Too many codes requested. Try again later.') {
     $now = time();
     $sel = $pdo->prepare('SELECT failures, window_start FROM auth_attempts WHERE attempt_key = ?');
     $sel->execute([$key]);
     $row = $sel->fetch(PDO::FETCH_ASSOC);
-    $inWindow = $row && $now - $row['window_start'] < ATTEMPT_WINDOW;
+    $inWindow = $row && $now - $row['window_start'] < $window;
     $count = $inWindow ? $row['failures'] + 1 : 1;
-    if ($count > $limit) bad('Too many codes requested. Try again later.', 429);
+    if ($count > $limit) bad($message, 429);
     $pdo->prepare('INSERT OR REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, 0)')
         ->execute([$key, $count, $inWindow ? $row['window_start'] : $now]);
 }

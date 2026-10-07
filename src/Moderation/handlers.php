@@ -11,6 +11,75 @@
 // respond(), hiddenUserIds()/isHiddenFrom() (the visibility filter every
 // listing handler applies), defer().
 
+const REPORT_REASONS = ['spam', 'harassment', 'hate', 'sexual', 'violence', 'self_harm', 'illegal', 'other'];
+
+// Any logged-in user can report a post, a comment or a user. One report per
+// reporter per target (a repeat is accepted silently, no second row). The
+// reported post/comment is hidden from the reporter at once (the visibility
+// filter reads the reports table), and the admin is emailed so the roughly
+// 24-hour response Apple expects can be met. The email never names the
+// reporter.
+function handle_reportContent($pdo, $user) {
+    global $CONFIG;
+    $uid = (int)$user['sub'];
+    $type = $_POST['targetType'] ?? '';
+    $targetId = trim((string)($_POST['targetId'] ?? ''));
+    $reason = $_POST['reason'] ?? '';
+    $details = trim((string)($_POST['details'] ?? ''));
+
+    if (!in_array($type, ['post', 'comment', 'user'], true)) bad('Invalid report type', 400);
+    if ($targetId === '') bad('Missing target', 400);
+    if (!in_array($reason, REPORT_REASONS, true)) bad('Invalid reason', 400);
+    if (strlen($details) > 500) bad('Details are too long (max 500 characters)', 400);
+    if ($details !== '') validateContent($details, 'Illegal characters in details');
+
+    if ($type === 'post') {
+        $s = $pdo->prepare('SELECT user_id, text FROM posts WHERE id = ?');
+        $s->execute([$targetId]);
+    } elseif ($type === 'comment') {
+        $s = $pdo->prepare('SELECT user_id, comment_text FROM comments WHERE id = ?');
+        $s->execute([(int)$targetId]);
+        $targetId = (string)(int)$targetId;
+    } else {
+        $s = $pdo->prepare('SELECT id, email FROM users WHERE id = ?');
+        $s->execute([(int)$targetId]);
+        $targetId = (string)(int)$targetId;
+    }
+    $target = $s->fetch(PDO::FETCH_NUM);
+    if (!$target) bad(ucfirst($type) . ' not found', 404);
+    [$targetUserId, $snapshot] = [(int)$target[0], (string)$target[1]];
+    if ($targetUserId === $uid) bad("You can't report yourself", 400);
+
+    throttleSend($pdo, "report:$uid", 20, 86400, 'Too many reports today. Try again tomorrow.');
+
+    $ins = $pdo->prepare('INSERT OR IGNORE INTO reports (reporter_id, target_type, target_id, target_user_id, reason, details, snapshot, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+    $ins->execute([$uid, $type, $targetId, $targetUserId, $reason, $details !== '' ? $details : null, $snapshot, date('Y-m-d H:i:s')]);
+
+    if ($ins->rowCount() > 0) {
+        $reportId = (int)$pdo->lastInsertId();
+        $to = $CONFIG['admin_report_email'] ?? '';
+        if ($to === '') {
+            writeLog('WARN', 'api', "report #$reportId saved but ADMIN_REPORT_EMAIL is not set, so no email was sent");
+        } else {
+            $host = preg_replace('/[^A-Za-z0-9.:-]/', '', $_SERVER['HTTP_HOST'] ?? '');
+            $link = $host !== '' ? "https://$host/admin" : '/admin';
+            $authorStmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
+            $authorStmt->execute([$targetUserId]);
+            $author = $authorStmt->fetchColumn() ?: "user $targetUserId";
+            $subject = "Simple Social report #$reportId: $type ($reason)";
+            $body = "A $type was reported for: $reason\n\n"
+                . "Author: $author\n"
+                . "Content at the time of the report:\n$snapshot\n\n"
+                . ($details !== '' ? "Details from the reporter:\n$details\n\n" : '')
+                . "Review it on the admin page: $link\n";
+            $headers = "From: no-reply@app.davidfruin.com\r\nReply-To: no-reply@app.davidfruin.com\r\n";
+            defer(fn() => mail($to, $subject, $body, $headers));
+        }
+    }
+    respond(good());
+}
+
 // Removes $removeId from $userId's users.follows JSON list. Follows aren't a
 // table yet, so this is the same decode/filter/re-encode the Follows module
 // does.
