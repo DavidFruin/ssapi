@@ -65,6 +65,9 @@ function handle_getMediaLimits($pdo, $user) {
     respond(good([
         'storageUsedBytes' => mediaBytesUsed($pdo, $user['sub']),
         'storageLimitBytes' => $CONFIG['media_max_user_bytes'],
+        // false when ffmpeg isn't working: clients hide video/audio options.
+        'videoSupported' => mediaCapabilities()['av'],
+        'audioSupported' => mediaCapabilities()['av'],
         'maxSeconds' => $CONFIG['media_max_seconds'],
         'maxFps' => $CONFIG['media_max_fps'],
         'maxSide' => $CONFIG['media_max_side'],
@@ -351,6 +354,45 @@ function probeFrameRate($probe) {
     if (strpos($raw, '/') === false) return (float)$raw;
     [$num, $den] = explode('/', $raw, 2);
     return (float)$den > 0 ? (float)$num / (float)$den : 0;
+}
+
+// Whether ffmpeg and ffprobe actually run here (exec allowed, both answer
+// -version within 5 s), and whether ffmpeg has the zscale filter (HDR tone
+// mapping, D5). Checked at most once an hour; the answer is cached in
+// private/tmp/media-capabilities.json. Without ffmpeg nothing but plain
+// JPEG/PNG/GIF/WebP images can be converted.
+function mediaCapabilities() {
+    global $CONFIG;
+    static $caps = null;
+    if ($caps !== null) return $caps;
+    $cacheFile = dirname($CONFIG['db_path']) . '/tmp/media-capabilities.json';
+    $cached = @json_decode((string)@file_get_contents($cacheFile), true);
+    if (is_array($cached) && ($cached['checkedAt'] ?? 0) > time() - 3600 && ($cached['ffmpeg'] ?? '') === FFMPEG) {
+        return $caps = $cached;
+    }
+
+    $runs = function ($bin, $args) {
+        if (!function_exists('exec') || !is_executable($bin)) return [false, []];
+        $out = [];
+        $code = 1;
+        $timeout = firstExecutable(['/usr/bin/timeout', '/bin/timeout']);
+        exec(($timeout ? escapeshellarg($timeout) . ' 5 ' : '') . escapeshellarg($bin) . ' ' . $args . ' 2>/dev/null', $out, $code);
+        return [$code === 0, $out];
+    };
+    [$ffmpegOk] = $runs(FFMPEG, '-hide_banner -version');
+    [$ffprobeOk] = $runs(FFPROBE, '-hide_banner -version');
+    [, $filters] = $ffmpegOk ? $runs(FFMPEG, '-hide_banner -filters') : [false, []];
+    $caps = [
+        'ffmpeg' => FFMPEG,
+        'checkedAt' => time(),
+        'av' => $ffmpegOk && $ffprobeOk,
+        'zscale' => (bool)preg_grep('/\szscale\s/', $filters),
+    ];
+    if (!$caps['av']) writeLog('ERROR', 'media', 'ffmpeg/ffprobe unavailable: video and audio uploads are off');
+    $dir = dirname($cacheFile);
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    @file_put_contents($cacheFile, json_encode($caps));
+    return $caps;
 }
 
 function firstExecutable(array $paths) {
@@ -756,6 +798,14 @@ function handle_uploadMedia() {
     if ($fileSize > max($maxSizes)) {
         $maxMb = round(max($maxSizes) / (1024 * 1024), 1);
         bad("That file is larger than the biggest allowed ($maxMb MB).", 400);
+    }
+
+    // Video and audio need ffmpeg. Without it, say so plainly rather than
+    // calling a perfectly good video an unsupported file type.
+    $sniffed = sniffMedia($tmpPath);
+    if ($sniffed && $sniffed['family'] !== 'image' && !mediaCapabilities()['av']) {
+        writeLog('ERROR', 'media', 'refused a video/audio upload: ffmpeg/ffprobe unavailable');
+        bad('Video and audio uploads are temporarily unavailable.', 503);
     }
 
     // What the file really is, from its own bytes. The Content-Type and the
