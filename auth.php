@@ -81,8 +81,17 @@ function refreshTokenHash($token) {
 
 // Turns a User-Agent into something recognisable in a device list. Crude by
 // design - it only has to be good enough to tell your phone from your laptop.
-function deviceNameFromUserAgent($ua) {
+//
+// $client is the optional X-Client header. The phone app sends
+// "ssreact-mobile/<version> (android|ios)", because React Native's own
+// User-Agent only says "okhttp" or "CFNetwork", which tells you nothing.
+function deviceNameFromUserAgent($ua, $client = '') {
     $ua = trim((string)$ua);
+
+    if (preg_match('/^ssreact-mobile\/[\w.\-]+ \((android|ios)\)$/i', trim((string)$client), $m)) {
+        return 'Simple Social app (' . (strtolower($m[1]) === 'ios' ? 'iOS' : 'Android') . ')';
+    }
+
     if ($ua === '') return 'Unknown device';
 
     // The C clients identify themselves directly.
@@ -168,7 +177,7 @@ function sessionCreate($pdo, $userId) {
     $stmt->execute([
         $sessionId, $userId, refreshTokenHash($refreshToken), $now, $now,
         date('Y-m-d H:i:s', time() + $refreshTtl),
-        deviceNameFromUserAgent($ua), $ua,
+        deviceNameFromUserAgent($ua, $_SERVER['HTTP_X_CLIENT'] ?? ''), $ua,
     ]);
 
     return [
