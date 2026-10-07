@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -72,12 +72,23 @@ function ensureSchema($pdo) {
     try {
         $v = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
         if ($v < 1) migration1($pdo);
+        if ($v < 2) migration2($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Adds push_subscriptions.kind: which delivery route a row uses. 'webpush' (the
+// default, so every existing row keeps working) is a browser's VAPID push
+// endpoint; 'expo' is the phone app's Expo push token, sent through Expo's push
+// service. The table itself comes from migration1().
+function migration2($pdo) {
+    $cols = $pdo->query('PRAGMA table_info(push_subscriptions)')->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($cols as $c) if ($c['name'] === 'kind') return;
+    $pdo->exec("ALTER TABLE push_subscriptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'webpush'");
 }
 
 // Everything that used to run on every request in api.php's db(), verbatim
@@ -227,18 +238,6 @@ function ensureSharedSchema($pdo) {
             $hasSessionId = false;
             foreach ($cols as $c) if ($c['name'] === 'session_id') $hasSessionId = true;
             if (!$hasSessionId) $pdo->exec('ALTER TABLE push_subscriptions ADD COLUMN session_id TEXT');
-        }
-    } catch (Exception $e) {}
-
-    // Which delivery route a row uses: 'webpush' (a browser's VAPID push
-    // endpoint, the default for every existing row) or 'expo' (the phone app's
-    // Expo push token, sent through Expo's push service).
-    try {
-        $cols = $pdo->query("PRAGMA table_info(push_subscriptions)")->fetchAll(PDO::FETCH_ASSOC);
-        if ($cols) {
-            $hasKind = false;
-            foreach ($cols as $c) if ($c['name'] === 'kind') $hasKind = true;
-            if (!$hasKind) $pdo->exec("ALTER TABLE push_subscriptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'webpush'");
         }
     } catch (Exception $e) {}
 
