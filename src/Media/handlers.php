@@ -199,12 +199,16 @@ function sniffMedia($path) {
     return null;
 }
 
-// What ffprobe finds inside a file: container name plus each stream's kind.
-// Returns null when ffprobe can't read it (or exec is unavailable).
+// Everything the pipeline needs to know about a file, from one ffprobe run:
+// container and duration, and per stream its kind, codec, size, frame rate,
+// colour transfer/primaries (HDR detection) and whether it's a cover
+// picture. The result is passed along (classifyMedia -> the upload handler
+// -> processVideo) instead of probing the same file again. Returns null when
+// ffprobe can't read it (or exec is unavailable).
 function probeMedia($path) {
     if (!function_exists('exec')) return null;
     $cmd = resourcePrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
-        . ' -show_entries format=format_name,duration:stream=codec_type,codec_name,width,height:stream_disposition=attached_pic'
+        . ' -show_entries format=format_name,duration:stream=codec_type,codec_name,width,height,r_frame_rate,color_transfer,color_primaries:stream_disposition=attached_pic'
         . ' -of json ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
     $out = [];
     exec($cmd, $out);
@@ -325,28 +329,24 @@ function classifyMedia($path) {
 const FFMPEG = '/usr/bin/ffmpeg';
 const FFPROBE = '/usr/bin/ffprobe';
 
-// Reads one ffprobe field. Returns '' when exec is unavailable or the probe
-// fails, which callers treat as "unknown" rather than as a failure.
-function ffprobeValue($path, $entries, $stream = false) {
-    if (!function_exists('exec')) return '';
-    $cmd = resourcePrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
-        . ($stream ? ' -select_streams v:0' : '')
-        . ' -show_entries ' . escapeshellarg($entries)
-        . ' -of csv=p=0 ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
-    $out = [];
-    exec($cmd, $out);
-    return trim($out[0] ?? '');
+// Duration in seconds from a probe, or 0 when it isn't known (browser WebM
+// recordings have none in their header; the -t cap still applies).
+function probeDuration($probe) {
+    return (float)($probe['format']['duration'] ?? 0);
 }
 
-// Duration in seconds, or 0 when it can't be determined.
-function mediaDuration($path) {
-    return (float)ffprobeValue($path, 'format=duration');
+// The main video stream of a probe (not a cover picture), or null.
+function probeVideoStream($probe) {
+    foreach ($probe['streams'] ?? [] as $s) {
+        if (($s['codec_type'] ?? '') === 'video' && empty($s['disposition']['attached_pic'])) return $s;
+    }
+    return null;
 }
 
-// Frame rate as a number -- ffprobe reports it as a fraction like "60000/1001".
-// Returns 0 when it can't be determined.
-function videoFrameRate($path) {
-    $raw = ffprobeValue($path, 'stream=r_frame_rate', true);
+// Frame rate as a number -- ffprobe reports it as a fraction like
+// "60000/1001". 0 when it isn't known.
+function probeFrameRate($probe) {
+    $raw = (string)(probeVideoStream($probe)['r_frame_rate'] ?? '');
     if ($raw === '') return 0;
     if (strpos($raw, '/') === false) return (float)$raw;
     [$num, $den] = explode('/', $raw, 2);
@@ -562,7 +562,7 @@ function processImage($inputPath, $outputPath) {
 // when ffmpeg can't convert it (the caller rejects the upload; the original
 // is never kept, because once any format is accepted an unconverted original
 // would be a file nobody can play).
-function processVideo($inputPath, $outputBase, $thumbnailPath) {
+function processVideo($inputPath, $outputBase, $thumbnailPath, $probe = null) {
     global $CONFIG;
     logMsg("processVideo: input=$inputPath output=$outputBase");
 
@@ -571,7 +571,8 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
     // it for nothing.
     $maxFps = $CONFIG['media_max_fps'];
     $filters = ffmpegScale($CONFIG['media_max_side']);
-    $sourceFps = videoFrameRate($inputPath);
+    $probe ??= probeMedia($inputPath);
+    $sourceFps = probeFrameRate($probe);
     if ($sourceFps > $maxFps) {
         $filters .= ',fps=' . $maxFps;
         logMsg("processVideo: source is {$sourceFps}fps, capping at " . $maxFps);
@@ -770,7 +771,7 @@ function handle_uploadMedia() {
     // rejected before spending minutes transcoding it. A duration of 0 means
     // ffprobe couldn't tell us, so it's let through.
     if ($mediaType === 'video' || $mediaType === 'audio') {
-        $duration = mediaDuration($tempInput);
+        $duration = probeDuration($classified['probe']);
         $maxSeconds = $CONFIG['media_max_seconds'];
         if ($duration > $maxSeconds) {
             @unlink($tempInput);
@@ -803,7 +804,7 @@ function handle_uploadMedia() {
         stageFile("{$stageDir}/{$base}.mp4");
         stageFile($stagedThumb);
         stageFile("$stagedThumb.png");
-        $ext = processVideo($tempInput, "{$stageDir}/{$base}", $stagedThumb);
+        $ext = processVideo($tempInput, "{$stageDir}/{$base}", $stagedThumb, $classified['probe']);
     } else {
         stageFile("{$stageDir}/{$base}.mp3");
         $ext = processAudio($tempInput, "{$stageDir}/{$base}");
