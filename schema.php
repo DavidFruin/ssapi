@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -74,12 +74,30 @@ function ensureSchema($pdo) {
         if ($v < 1) migration1($pdo);
         if ($v < 2) migration2($pdo);
         if ($v < 3) migration3($pdo);
+        if ($v < 4) migration4($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Media details (media pipeline plan B4): stored size and length, total
+// bytes on disk (for the per-user quota), the 960 px feed variant and the
+// video poster (C2/C3), and whether a video should loop silently like a GIF
+// (D6). Rows from before this have NULLs; bin/media-backfill.php fills them.
+// The path index serves the posts -> media join (C3).
+function migration4($pdo) {
+    $have = array_column($pdo->query('PRAGMA table_info(media)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    $add = [
+        'width' => 'INTEGER', 'height' => 'INTEGER', 'duration' => 'REAL', 'bytes' => 'INTEGER',
+        'variant_path' => 'TEXT', 'poster_path' => 'TEXT', 'loop' => 'INTEGER NOT NULL DEFAULT 0',
+    ];
+    foreach ($add as $col => $type) {
+        if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE media ADD COLUMN \"$col\" $type");
+    }
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_media_path ON media(path)');
 }
 
 // Moderation (access-and-public-launch plan, Step 1B): blocks between users,

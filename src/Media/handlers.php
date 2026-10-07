@@ -533,6 +533,25 @@ function convertImageToPng($inputPath, $pngPath) {
     return runFfmpeg($inputPath, ['-frames:v', '1', ...FFMPEG_STRIP_METADATA, $pngPath]) ? $pngPath : false;
 }
 
+// Width/height/duration of a finished output file, for the media row.
+// Unknown values come back null rather than failing the upload.
+function mediaOutputInfo($path, $type) {
+    if ($type === 'image') {
+        $size = @getimagesize($path);
+        return ['width' => $size[0] ?? null, 'height' => $size[1] ?? null, 'duration' => null];
+    }
+    $probe = probeMedia($path);
+    $info = ['width' => null, 'height' => null, 'duration' => isset($probe['format']['duration']) ? round((float)$probe['format']['duration'], 2) : null];
+    foreach ($probe['streams'] ?? [] as $s) {
+        if (($s['codec_type'] ?? '') === 'video') {
+            $info['width'] = $s['width'] ?? null;
+            $info['height'] = $s['height'] ?? null;
+            break;
+        }
+    }
+    return $info;
+}
+
 function handle_uploadMedia() {
     global $CONFIG;
 
@@ -649,9 +668,14 @@ function handle_uploadMedia() {
 
     $filename = "{$base}.{$ext}";
     $pdo = db();
-    $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at) VALUES (?, ?, ?, ?, ?)');
+    $finalFile = "{$typeDir}/{$filename}";
+    $info = mediaOutputInfo($finalFile, $mediaType);
+    // Everything this upload stores counts toward the user's quota (B3),
+    // the video thumbnail included.
+    $bytes = (int)@filesize($finalFile) + ($mediaType === 'video' && file_exists($thumbnailPath) ? (int)filesize($thumbnailPath) : 0);
+    $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     $path = "/media/{$uid}/{$mediaType}/{$filename}";
-    $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s')]);
+    $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes]);
     $mediaId = $pdo->lastInsertId();
 
     $thumbUrl = ($mediaType === 'video' && file_exists($thumbnailPath)) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
