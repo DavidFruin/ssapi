@@ -142,6 +142,18 @@ function handle_getBlockedUsers($pdo, $user) {
     respond(good(['users' => $rows]));
 }
 
+// Records that the user accepted the current Terms of Use. version must be
+// the current one, so an app showing outdated terms can't record acceptance
+// of the new ones.
+function handle_acceptTerms($pdo, $user) {
+    global $CONFIG;
+    $version = (int)($_POST['version'] ?? 0);
+    if ($version !== $CONFIG['terms_version']) bad('Those terms are out of date. Reload and try again.', 400);
+    $pdo->prepare('UPDATE users SET terms_version_accepted = ?, terms_accepted_at = ? WHERE id = ?')
+        ->execute([$version, date('Y-m-d H:i:s'), $user['sub']]);
+    respond(good(['termsVersionAccepted' => $version]));
+}
+
 // ============== ADMIN ==============
 // users.is_admin is set by hand with sqlite3 on the server; there is no API
 // to grant it.

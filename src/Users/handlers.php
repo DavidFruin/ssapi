@@ -47,11 +47,15 @@ function handle_getUserEmails($pdo, $user) {
 }
 
 function handle_getMyInfo($pdo, $user) {
-    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, is_admin FROM users WHERE id = ?');
+    global $CONFIG;
+    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, is_admin, terms_version_accepted FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right',
-        'isAdmin' => (int)($row['is_admin'] ?? 0) === 1]));
+        'isAdmin' => (int)($row['is_admin'] ?? 0) === 1,
+        'termsVersionAccepted' => (int)($row['terms_version_accepted'] ?? 0),
+        'termsVersionCurrent' => $CONFIG['terms_version'],
+        'termsUrl' => $CONFIG['terms_url']]));
 }
 
 function handle_updateTheme($pdo, $user) {

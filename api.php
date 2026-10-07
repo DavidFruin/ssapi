@@ -565,7 +565,7 @@ $HANDLERS = [
     'deletePushSubscription' => 'handle_deletePushSubscription',
     'saveExpoPushToken' => 'handle_saveExpoPushToken',
     'deleteExpoPushToken' => 'handle_deleteExpoPushToken',
-    'reportContent' => 'handle_reportContent',
+    'reportContent' => 'handle_reportContent', 'acceptTerms' => 'handle_acceptTerms',
     'blockUser' => 'handle_blockUser', 'unblockUser' => 'handle_unblockUser',
     'getBlockedUsers' => 'handle_getBlockedUsers',
     'adminListReports' => 'handle_adminListReports', 'adminResolveReport' => 'handle_adminResolveReport',

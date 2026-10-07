@@ -74,6 +74,12 @@ $CONFIG['vapid_subject'] = getenv('VAPID_SUBJECT') ?: ($_ENV['VAPID_SUBJECT'] ??
 // means no report email (logged as a warning) and no address in the message.
 $CONFIG['admin_report_email'] = getenv('ADMIN_REPORT_EMAIL') ?: '';
 $CONFIG['contact_email'] = getenv('CONTACT_EMAIL') ?: '';
+// The current Terms of Use version. The phone and web apps ask a user to
+// accept it whenever their accepted version is lower; bump it when the terms
+// change. The server only records acceptance and never refuses requests
+// without it, so the terminal clients keep working.
+$CONFIG['terms_version'] = (int)(getenv('TERMS_VERSION') ?: 1);
+$CONFIG['terms_url'] = getenv('TERMS_URL') ?: '/terms';
 
 // Test-only: point Expo push (the phone app) at a local mock instead of
 // exp.host. Leave unset in production, where the real service is used and only
