@@ -93,8 +93,38 @@ function getLikesForPostIds($pdo, $postIds, $viewerId = null) {
     return $byPost;
 }
 
+// Columns to select (with POST_MEDIA_JOIN) so postRowToApi can describe the
+// attached media. Prefixed m_ so they can't clash with the posts columns.
+const POST_MEDIA_COLUMNS = 'm.type AS m_type, m.width AS m_width, m.height AS m_height, m.duration AS m_duration,
+    m.variant_path AS m_variant, m.poster_path AS m_poster, m."loop" AS m_loop';
+const POST_MEDIA_JOIN = 'LEFT JOIN media m ON m.path = posts.media_url';
+
+// The post's attached media for clients: type, full-size url, stored size,
+// the 960 px feed variant and the video poster when there are any, length,
+// and whether to loop it silently (animated GIFs). null without media. A
+// file from before the media table had these columns still gets its type
+// (from its folder) and url, with the rest null.
+function postMediaToApi($row) {
+    $url = $row['media_url'] ?? null;
+    if (!$url || $url === 'null') return null;
+    $type = $row['m_type'] ?? null;
+    if (!$type && preg_match('#^/media/\d+/(image|video|audio)/#', $url, $m)) $type = $m[1];
+    return [
+        'type' => $type,
+        'url' => $url,
+        'width' => isset($row['m_width']) ? (int)$row['m_width'] : null,
+        'height' => isset($row['m_height']) ? (int)$row['m_height'] : null,
+        'variantUrl' => $row['m_variant'] ?? null,
+        'posterUrl' => $row['m_poster'] ?? null,
+        'duration' => isset($row['m_duration']) ? (float)$row['m_duration'] : null,
+        'loop' => !empty($row['m_loop']),
+    ];
+}
+
 // A posts-table row, in the shape handlers have always returned. Callers
-// still add userID/userEmail/mentions themselves, same as before.
+// still add userID/userEmail/mentions themselves, same as before. mediaUrl
+// stays for older clients (CLI/TUI, older app builds); media is the richer
+// description newer clients use.
 function postRowToApi($row, $likesByPost) {
     return [
         'id' => $row['id'],
@@ -102,6 +132,7 @@ function postRowToApi($row, $likesByPost) {
         'timestamp' => $row['created_at'],
         'likes' => $likesByPost[$row['id']] ?? [],
         'mediaUrl' => $row['media_url'],
+        'media' => postMediaToApi($row),
     ];
 }
 
@@ -112,8 +143,8 @@ function handle_getPostById($pdo, $user) {
     // LEFT, not inner: a post whose owner row is somehow gone should still
     // render (same fallback as before, just folded into one query) rather
     // than 404 as if the post itself didn't exist.
-    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email
-        FROM posts LEFT JOIN users ON users.id = posts.user_id WHERE posts.id = ?');
+    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email, ' . POST_MEDIA_COLUMNS . '
+        FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN . ' WHERE posts.id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || isHiddenFrom($pdo, $user['sub'], $row['user_id']) || isReportedBy($pdo, $user['sub'], 'post', $postId)) bad('Post not found', 404);
@@ -221,12 +252,13 @@ function handle_post($pdo, $user) {
 // just removed elsewhere.
 function fetchPostsPageForUser($pdo, $viewerId, $targetId, $targetEmail, $limit, $offset) {
     // Posts the viewer reported are hidden from them.
-    [$rf, $rp] = reportedFilter($pdo, $viewerId, 'post', 'id');
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id = ?$rf");
+    [$rf, $rp] = reportedFilter($pdo, $viewerId, 'post', 'posts.id');
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE posts.user_id = ?$rf");
     $countStmt->execute(array_merge([$targetId], $rp));
     $totalCount = (int)$countStmt->fetchColumn();
 
-    $stmt = $pdo->prepare("SELECT id, user_id, text, media_url, created_at FROM posts WHERE user_id = ?$rf ORDER BY created_at DESC LIMIT $limit OFFSET $offset");
+    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, " . POST_MEDIA_COLUMNS . "
+        FROM posts " . POST_MEDIA_JOIN . " WHERE posts.user_id = ?$rf ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
     $stmt->execute(array_merge([$targetId], $rp));
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
@@ -293,8 +325,8 @@ function handle_fetchFollowedPosts($pdo, $user) {
     // One query across every followed user, ordered and paged in SQL,
     // instead of pulling each user's whole post list into PHP to merge and
     // sort by hand.
-    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email
-        FROM posts JOIN users ON users.id = posts.user_id
+    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email, " . POST_MEDIA_COLUMNS . "
+        FROM posts JOIN users ON users.id = posts.user_id " . POST_MEDIA_JOIN . "
         WHERE posts.user_id IN ($placeholders)$rf
         ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
     $stmt->execute(array_merge($followedIds, $rp));
@@ -421,21 +453,14 @@ function deletePostById($pdo, $postId) {
         $mediaUrl = $row['media_url'];
         if (!empty($mediaUrl) && $mediaUrl !== 'null') {
             if (strpos($mediaUrl, '..') === false && strpos($mediaUrl, '/') === 0) {
-                $stmt = $pdo->prepare('SELECT id, path FROM media WHERE path = ? AND user_id = ?');
+                $stmt = $pdo->prepare('SELECT * FROM media WHERE path = ? AND user_id = ?');
                 $stmt->execute([$mediaUrl, $ownerId]);
                 $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($mediaRow) {
-                    // mediaFilePath() (schema.php, deploy layout: L1) maps
-                    // the stored URL path onto $CONFIG['media_dir'] -- a
-                    // code-relative path broke the moment this code could
-                    // live outside public_html entirely.
-                    $mediaFile = mediaFilePath($mediaRow['path']);
-                    if ($mediaFile !== null) {
-                        $filesToUnlink[] = $mediaFile;
-                        if (strpos($mediaRow['path'], '/video/') !== false) {
-                            $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $mediaFile);
-                        }
-                    }
+                    // The file, a video's thumbnail, and the feed variant
+                    // and poster when there are any (mediaRowFiles maps the
+                    // stored paths onto $CONFIG['media_dir']).
+                    $filesToUnlink = array_merge($filesToUnlink, mediaRowFiles($mediaRow));
                     $pdo->prepare('DELETE FROM media WHERE id = ?')->execute([$mediaRow['id']]);
                 }
             }

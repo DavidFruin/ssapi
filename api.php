@@ -488,17 +488,12 @@ function handle_deleteAccount($pdo, $user) {
         $pdo->prepare('DELETE FROM post_likes WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM comments WHERE user_id = ?')->execute([$uid]);
 
-        $stmt = $pdo->prepare('SELECT path FROM media WHERE user_id = ?');
+        $stmt = $pdo->prepare('SELECT * FROM media WHERE user_id = ?');
         $stmt->execute([$uid]);
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-            // mediaFilePath() (schema.php, deploy layout: L1) maps the
-            // stored URL path onto $CONFIG['media_dir'] and already rejects
-            // a '..'-bearing path -- a code-relative path broke the moment
-            // this code could live outside public_html entirely.
-            $f = mediaFilePath($r['path']);
-            if ($f === null) continue;
-            $filesToUnlink[] = $f;
-            $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $f);
+            // Every file the row owns (file, thumbnail, variant, poster);
+            // mediaFilePath() underneath rejects anything outside media/.
+            $filesToUnlink = array_merge($filesToUnlink, mediaRowFiles($r));
         }
         $pdo->prepare('DELETE FROM media WHERE user_id = ?')->execute([$uid]);
         // Moderation: their blocks both ways and the reports they filed go;

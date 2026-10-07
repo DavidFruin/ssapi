@@ -458,7 +458,34 @@ function applyExifOrientation($img, $inputPath) {
     return $rotated;
 }
 
-function processImage($inputPath, $outputPath) {
+// The feed shows images at most this wide/tall (C3); the full 1920 px
+// version is for the lightbox.
+const MEDIA_VARIANT_SIDE = 960;
+
+// A copy of $src scaled so its longest side is $maxSide. Keeps transparency
+// when $alpha is set.
+function scaledCopy($src, $maxSide, $alpha) {
+    $w = imagesx($src);
+    $h = imagesy($src);
+    $ratio = $maxSide / max($w, $h);
+    $newWidth = max(1, (int)($w * $ratio));
+    $newHeight = max(1, (int)($h * $ratio));
+    $dst = imagecreatetruecolor($newWidth, $newHeight);
+    if ($alpha) {
+        imagealphablending($dst, false);
+        imagesavealpha($dst, true);
+        $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
+        imagefill($dst, 0, 0, $transparent);
+    }
+    imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $w, $h);
+    return $dst;
+}
+
+// Converts to WebP at most media_max_side on the longest side. With
+// $variantPath, also writes a MEDIA_VARIANT_SIDE px WebP there for the feed,
+// but only when the image is bigger than that (resampled from the same
+// decoded image, not decoded again). Returns true on success.
+function processImage($inputPath, $outputPath, $variantPath = null) {
     global $CONFIG;
     logMsg("processImage: input=$inputPath output=$outputPath");
 
@@ -514,29 +541,24 @@ function processImage($inputPath, $outputPath) {
     // Resize so the longest side is at most media_max_side (portrait or landscape)
     $maxSide = $CONFIG['media_max_side'];
 
+    // Transparency is only kept for PNG for now (media plan D1 widens it).
+    $alpha = $inputExt === 'png';
+
     if (max($srcWidth, $srcHeight) > $maxSide) {
-        $ratio = $maxSide / max($srcWidth, $srcHeight);
-        $newWidth = (int)($srcWidth * $ratio);
-        $newHeight = (int)($srcHeight * $ratio);
-
-        $dst = imagecreatetruecolor($newWidth, $newHeight);
-
-        // Preserve transparency for PNG
-        if ($inputExt === "png") {
-            imagealphablending($dst, false);
-            imagesavealpha($dst, true);
-            $transparent = imagecolorallocatealpha($dst, 0, 0, 0, 127);
-            imagefill($dst, 0, 0, $transparent);
-        }
-
-        imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $srcWidth, $srcHeight);
-        logMsg("processImage: resized to {$newWidth}x{$newHeight}");
+        $dst = scaledCopy($src, $maxSide, $alpha);
+        logMsg('processImage: resized to ' . imagesx($dst) . 'x' . imagesy($dst));
     } else {
         $dst = $src;
     }
 
     // Save as WebP with 85% quality
     $result = imagewebp($dst, $outputPath, 85);
+
+    if ($result && $variantPath !== null && max($srcWidth, $srcHeight) > MEDIA_VARIANT_SIDE) {
+        $small = scaledCopy($src, MEDIA_VARIANT_SIDE, $alpha);
+        if (!imagewebp($small, $variantPath, 80)) logMsg('processImage: could not write the feed variant');
+        imagedestroy($small);
+    }
 
     if ($dst !== $src) {
         imagedestroy($dst);
@@ -798,6 +820,7 @@ function handle_uploadMedia() {
     // into the public media/ folder after the database row exists, so a
     // half-written or failed conversion is never web-reachable.
     $stagedThumb = "{$stageDir}/thumb_{$base}.webp";
+    $stagedVariant = "{$stageDir}/{$base}_960.webp";
 
     if ($mediaType === 'image') {
         $imageSource = $tempInput;
@@ -805,7 +828,8 @@ function handle_uploadMedia() {
             // A format GD can't read: ffmpeg decodes it to a PNG first.
             $imageSource = convertImageToPng($tempInput, stageFile("{$stageDir}/{$base}.png"));
         }
-        $ext = ($imageSource && processImage($imageSource, stageFile("{$stageDir}/{$base}.webp"))) ? 'webp' : false;
+        $stagedVariant = stageFile("{$stageDir}/{$base}_960.webp");
+        $ext = ($imageSource && processImage($imageSource, stageFile("{$stageDir}/{$base}.webp"), $stagedVariant)) ? 'webp' : false;
         if ($imageSource && $imageSource !== $tempInput) @unlink($imageSource);
     } elseif ($mediaType === 'video') {
         stageFile("{$stageDir}/{$base}.mp4");
@@ -825,6 +849,11 @@ function handle_uploadMedia() {
     // staged path => final path, main file first.
     $moves = [$stagedMain => "{$typeDir}/{$filename}"];
     if ($mediaType === 'video' && file_exists($stagedThumb)) $moves[$stagedThumb] = "{$typeDir}/thumb_{$base}.webp";
+    $variantPath = null;
+    if ($mediaType === 'image' && file_exists($stagedVariant)) {
+        $moves[$stagedVariant] = "{$typeDir}/{$base}_960.webp";
+        $variantPath = "/media/{$uid}/image/{$base}_960.webp";
+    }
 
     $info = mediaOutputInfo($stagedMain, $mediaType);
     // Everything this upload stores counts toward the user's quota (B3),
@@ -837,8 +866,8 @@ function handle_uploadMedia() {
     $pdo->beginTransaction();
     try {
         $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
-        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath]);
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath]);
         $mediaId = $pdo->lastInsertId();
         $moved = [];
         foreach ($moves as $from => $to) {
