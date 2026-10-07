@@ -338,6 +338,13 @@ function runFfmpeg(string $inputPath, array $outputArgs): bool {
     return $code === 0;
 }
 
+// Output options that drop the source's global, stream and chapter metadata:
+// phone videos carry GPS (location), device and comment tags, and ffmpeg
+// copies them into the output by default. Rotation isn't lost: ffmpeg
+// applies the display-matrix rotation to the pixels while decoding
+// (autorotate), so frames are already upright.
+const FFMPEG_STRIP_METADATA = ['-map_metadata', '-1', '-map_chapters', '-1'];
+
 // Scale filter keeping the longest side at most $max px, with even dimensions for H.264.
 function ffmpegScale($max) {
     return "scale='trunc(min(1,$max/max(iw,ih))*iw/2)*2':'trunc(min(1,$max/max(iw,ih))*ih/2)*2'";
@@ -486,7 +493,7 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
         '-t', (string)$CONFIG['media_max_seconds'],
         '-map', '0:v:0', '-map', '0:a:0?', '-vf', $filters,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', "$outputBase.mp4",
+        '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', ...FFMPEG_STRIP_METADATA, "$outputBase.mp4",
     ]);
     if (!$converted) {
         @unlink("$outputBase.mp4");
@@ -501,7 +508,7 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
 // ffmpeg grabs the first frame as PNG; GD converts it to WebP.
 function createVideoThumbnail($videoPath, $thumbnailPath) {
     $png = "$thumbnailPath.png";
-    if (!runFfmpeg($videoPath, ['-frames:v', '1', '-vf', ffmpegScale(640), $png])) return false;
+    if (!runFfmpeg($videoPath, ['-frames:v', '1', '-vf', ffmpegScale(640), ...FFMPEG_STRIP_METADATA, $png])) return false;
     $img = @imagecreatefrompng($png);
     @unlink($png);
     if (!$img) return false;
@@ -518,7 +525,7 @@ function processAudio($inputPath, $outputBase, $alreadyMp3) {
 
     if ($alreadyMp3) return copy($inputPath, "$outputBase.mp3") ? 'mp3' : false;
 
-    if (runFfmpeg($inputPath, ['-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', "$outputBase.mp3"])) return 'mp3';
+    if (runFfmpeg($inputPath, ['-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', ...FFMPEG_STRIP_METADATA, "$outputBase.mp3"])) return 'mp3';
     @unlink("$outputBase.mp3");
     return false;
 }
@@ -527,7 +534,7 @@ function processAudio($inputPath, $outputBase, $alreadyMp3) {
 // first frame to a PNG, which processImage then handles like any other.
 // Returns the PNG's path, or false.
 function convertImageToPng($inputPath, $pngPath) {
-    return runFfmpeg($inputPath, ['-frames:v', '1', $pngPath]) ? $pngPath : false;
+    return runFfmpeg($inputPath, ['-frames:v', '1', ...FFMPEG_STRIP_METADATA, $pngPath]) ? $pngPath : false;
 }
 
 function handle_uploadMedia() {
