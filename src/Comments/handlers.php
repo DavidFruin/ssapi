@@ -77,10 +77,16 @@ function handle_deleteComment($pdo, $user) {
     if (!$ownerId) bad('Comment not found', 404);
     if ($ownerId != $user['sub']) bad('Can only delete your own comments', 403);
 
-    $stmt = $pdo->prepare('DELETE FROM comments WHERE id = ?');
-    $stmt->execute([$commentId]);
-
+    deleteCommentById($pdo, $commentId);
     respond(good(['deleted' => true]));
+}
+
+// No ownership check: callers do that (handle_deleteComment for the author,
+// adminResolveReport for an admin).
+function deleteCommentById($pdo, $commentId) {
+    $stmt = $pdo->prepare('DELETE FROM comments WHERE id = ?');
+    $stmt->execute([(int)$commentId]);
+    return $stmt->rowCount() > 0;
 }
 
 function handle_getPostCommentCounts($pdo, $user) {

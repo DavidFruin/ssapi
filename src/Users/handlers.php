@@ -47,10 +47,11 @@ function handle_getUserEmails($pdo, $user) {
 }
 
 function handle_getMyInfo($pdo, $user) {
-    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, is_admin FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right']));
+    respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right',
+        'isAdmin' => (int)($row['is_admin'] ?? 0) === 1]));
 }
 
 function handle_updateTheme($pdo, $user) {

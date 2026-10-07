@@ -379,15 +379,29 @@ function handle_getPostLikes($pdo, $user) {
 }
 
 function handle_deletePost($pdo, $user) {
-    global $action;
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    $stmt->execute([$postId]);
+    $ownerId = $stmt->fetchColumn();
+    if ($ownerId === false) bad('Post not found', 404);
+    if ((int)$ownerId != $user['sub']) bad('You can only delete your own posts', 403);
+
+    deletePostById($pdo, $postId);
+    respond(good(['deleted' => true]));
+}
+
+// Deletes a post with its likes, comments, notifications and attached media
+// (row and files). No ownership check: callers do that (handle_deletePost
+// for the owner, adminResolveReport for an admin). Returns false if the post
+// doesn't exist.
+function deletePostById($pdo, $postId) {
     $stmt = $pdo->prepare('SELECT user_id, media_url FROM posts WHERE id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row) bad('Post not found', 404);
-    if ((int)$row['user_id'] != $user['sub']) bad('You can only delete your own posts', 403);
+    if (!$row) return false;
+    $ownerId = (int)$row['user_id'];
 
     // Filesystem unlinks happen after commit, not during -- a failed
     // unlink() must never roll back DB rows that already deleted cleanly,
@@ -408,7 +422,7 @@ function handle_deletePost($pdo, $user) {
         if (!empty($mediaUrl) && $mediaUrl !== 'null') {
             if (strpos($mediaUrl, '..') === false && strpos($mediaUrl, '/') === 0) {
                 $stmt = $pdo->prepare('SELECT id, path FROM media WHERE path = ? AND user_id = ?');
-                $stmt->execute([$mediaUrl, $user['sub']]);
+                $stmt->execute([$mediaUrl, $ownerId]);
                 $mediaRow = $stmt->fetch(PDO::FETCH_ASSOC);
                 if ($mediaRow) {
                     // mediaFilePath() (schema.php, deploy layout: L1) maps
@@ -435,6 +449,5 @@ function handle_deletePost($pdo, $user) {
     foreach ($filesToUnlink as $file) {
         if (file_exists($file)) unlink($file);
     }
-
-    respond(good(['deleted' => true]));
+    return true;
 }

@@ -111,7 +111,7 @@ function handle_login($pdo) {
     $keys = attemptKeys('login', $email);
     checkAttemptLimit($pdo, $keys);
 
-    $stmt = $pdo->prepare('SELECT id, password, email FROM users WHERE LOWER(email) = LOWER(?)');
+    $stmt = $pdo->prepare('SELECT id, password, email, frozen_at FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$user || !password_verify($password, $user['password'])) {
@@ -119,6 +119,12 @@ function handle_login($pdo) {
         bad('Invalid email or password', 401);
     }
     clearAttempts($pdo, $keys);
+    // Checked only after the password, so it can't be used to probe which
+    // emails have accounts.
+    if ($user['frozen_at'] !== null) {
+        $contact = $CONFIG['contact_email'] ?? '';
+        bad('This account has been suspended. ' . ($contact !== '' ? "Contact $contact" : 'Contact the site admin') . ' if you think this is a mistake.', 403);
+    }
 
     // A new login adds a session; it never disturbs the ones already there,
     // which is the whole point - the old code overwrote a single token slot

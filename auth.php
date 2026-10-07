@@ -244,11 +244,14 @@ function sessionRefresh($pdo, $refreshToken) {
     $refreshTtl = $CONFIG['session_refresh_ttl'] ?? 2592000;
     if (!$refreshToken) return false;
 
-    $stmt = $pdo->prepare('SELECT * FROM sessions WHERE refresh_hash = ?');
+    $stmt = $pdo->prepare('SELECT s.*, u.frozen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.refresh_hash = ?');
     $stmt->execute([refreshTokenHash($refreshToken)]);
     $session = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$session) return false;
+    // Freezing revokes every session already; this also covers a refresh
+    // racing the freeze.
+    if ($session['frozen_at'] !== null) return false;
     if ($session['revoked_at'] !== null) return false;
     if ($session['expires_at'] < date('Y-m-d H:i:s')) return false;
 

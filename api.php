@@ -501,6 +501,12 @@ function handle_deleteAccount($pdo, $user) {
             $filesToUnlink[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $f);
         }
         $pdo->prepare('DELETE FROM media WHERE user_id = ?')->execute([$uid]);
+        // Moderation: their blocks both ways and the reports they filed go;
+        // reports *about* them stay (with the snapshot) as the moderation
+        // record, no longer pointing at an account.
+        $pdo->prepare('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?')->execute([$uid, $uid]);
+        $pdo->prepare('DELETE FROM reports WHERE reporter_id = ?')->execute([$uid]);
+        $pdo->prepare('UPDATE reports SET target_user_id = NULL WHERE target_user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
@@ -562,6 +568,8 @@ $HANDLERS = [
     'reportContent' => 'handle_reportContent',
     'blockUser' => 'handle_blockUser', 'unblockUser' => 'handle_unblockUser',
     'getBlockedUsers' => 'handle_getBlockedUsers',
+    'adminListReports' => 'handle_adminListReports', 'adminResolveReport' => 'handle_adminResolveReport',
+    'adminFreezeUser' => 'handle_adminFreezeUser', 'adminUnfreezeUser' => 'handle_adminUnfreezeUser',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',
     'revokeAllOtherSessions' => 'handle_revokeAllOtherSessions',
     'log' => 'handle_log_request'
