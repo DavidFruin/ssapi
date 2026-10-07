@@ -10,6 +10,8 @@ $CONFIG = [
     'media_max_image_bytes' => 10 * 1024 * 1024,
     'media_max_video_bytes' => 100 * 1024 * 1024,
     'media_max_audio_bytes' => 50 * 1024 * 1024,
+    'media_max_pixels' => 50_000_000,      // ~50 MP: covers 48 MP phone photos; refuses decompression bombs
+    'media_max_dimension' => 12000,        // longest side (px) of an uploaded image or video frame
 
     // Max distinct @[id] mentions allowed in a single post or comment.
     'max_mentions' => 10,

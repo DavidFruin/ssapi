@@ -101,6 +101,9 @@ function ensureMediaDir($userId, $type) {
 // family 'av' means "a container that might hold video, audio or both" --
 // classifyMedia asks ffprobe which. ext is 'img' for an image GD can't read
 // (converted by ffmpeg first) and 'bin' where the extension doesn't matter.
+// For images getimagesize() could read, 'width'/'height' come from the
+// header (no pixels are decoded), so classifyMedia can refuse an oversized
+// image before anything allocates memory for it.
 function sniffMedia($path) {
     $h = @file_get_contents($path, false, null, 0, 512);
     if ($h === false || strlen($h) < 12) return null;
@@ -132,7 +135,7 @@ function sniffMedia($path) {
 
     $img = @getimagesize($path);
     $gdExt = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif', IMAGETYPE_WEBP => 'webp'];
-    if ($img && isset($gdExt[$img[2]])) return ['family' => 'image', 'ext' => $gdExt[$img[2]]];
+    if ($img && isset($gdExt[$img[2]])) return ['family' => 'image', 'ext' => $gdExt[$img[2]], 'width' => $img[0], 'height' => $img[1]];
     // BMP, TIFF, AVIF, ICO and the like: real images, but not ones GD reads.
     if ($img && in_array($img[2], [IMAGETYPE_BMP, IMAGETYPE_TIFF_II, IMAGETYPE_TIFF_MM, IMAGETYPE_ICO, IMAGETYPE_AVIF ?? -1], true)) {
         return ['family' => 'image', 'ext' => 'img'];
@@ -145,7 +148,7 @@ function sniffMedia($path) {
 function probeMedia($path) {
     if (!function_exists('exec')) return null;
     $cmd = timeoutPrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
-        . ' -show_entries format=format_name,duration:stream=codec_type,codec_name:stream_disposition=attached_pic'
+        . ' -show_entries format=format_name,duration:stream=codec_type,codec_name,width,height:stream_disposition=attached_pic'
         . ' -of json ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
     $out = [];
     exec($cmd, $out);
@@ -161,16 +164,55 @@ const PROBE_ALLOWED_FORMATS = [
     'flv', 'asf', 'mpegts', 'mpeg', 'mpegvideo', 'amr', 'aiff', 'caf',
 ];
 
+// Refusal message when a width x height frame is over the pixel limits, or
+// null when it's fine. Checked from headers before anything is decoded: a
+// small file can claim a huge size (a 777 KB PNG of 16000x16000 made GD use
+// 1.7 GB, outside PHP's memory_limit), and decoding is what costs the memory.
+function oversizedFrame($width, $height, $what) {
+    global $CONFIG;
+    $width = (int)$width;
+    $height = (int)$height;
+    if ($width * $height <= $CONFIG['media_max_pixels'] && max($width, $height) <= $CONFIG['media_max_dimension']) return null;
+    logMsg("classifyMedia: refused {$width}x{$height} $what (over the pixel limits)");
+    $mp = round($CONFIG['media_max_pixels'] / 1_000_000);
+    return "That $what is too large (max about $mp megapixels).";
+}
+
+// The first refusal for any video stream in a probe that's over the pixel
+// limits, or null.
+function oversizedProbe($probe, $what) {
+    foreach ($probe['streams'] ?? [] as $stream) {
+        if (($stream['codec_type'] ?? '') !== 'video') continue;
+        $why = oversizedFrame($stream['width'] ?? 0, $stream['height'] ?? 0, $what);
+        if ($why) return $why;
+    }
+    return null;
+}
+
 // Works out what an uploaded file really is, from its bytes (never from the
-// client's say-so). Returns ['type' => image|video|audio, 'ext' => ...] or
-// null when it isn't recognizable media we're willing to process.
+// client's say-so). Returns ['type' => image|video|audio, 'ext' => ...,
+// 'probe' => ffprobe's result or null], ['reject' => message] for media we
+// recognize but refuse (too many pixels), or null when it isn't recognizable
+// media we're willing to process.
 function classifyMedia($path) {
     $sniffed = sniffMedia($path);
     if (!$sniffed) return null;
-    if ($sniffed['family'] === 'image') return ['type' => 'image', 'ext' => $sniffed['ext']];
+    if ($sniffed['family'] === 'image') {
+        if (isset($sniffed['width'])) {
+            $why = oversizedFrame($sniffed['width'], $sniffed['height'], 'image');
+            return $why ? ['reject' => $why] : ['type' => 'image', 'ext' => $sniffed['ext'], 'probe' => null];
+        }
+        // ffmpeg decodes this one (HEIC, AVIF, ...), so ask ffprobe for its size first.
+        $probe = probeMedia($path);
+        if (!$probe) return null;
+        $why = oversizedProbe($probe, 'image');
+        return $why ? ['reject' => $why] : ['type' => 'image', 'ext' => $sniffed['ext'], 'probe' => $probe];
+    }
 
     $probe = probeMedia($path);
     if (!$probe || !in_array($probe['format']['format_name'], PROBE_ALLOWED_FORMATS, true)) return null;
+    $why = oversizedProbe($probe, 'video');
+    if ($why) return ['reject' => $why];
 
     $hasVideo = false;
     $hasAudio = false;
@@ -178,11 +220,11 @@ function classifyMedia($path) {
         if (($stream['codec_type'] ?? '') === 'video' && empty($stream['disposition']['attached_pic'])) $hasVideo = true;
         if (($stream['codec_type'] ?? '') === 'audio') $hasAudio = true;
     }
-    if ($hasVideo) return ['type' => 'video', 'ext' => 'bin'];
+    if ($hasVideo) return ['type' => 'video', 'ext' => 'bin', 'probe' => $probe];
     if ($hasAudio) {
         // An MP3 already is the target format, so it's kept as-is.
         $isMp3 = $probe['format']['format_name'] === 'mp3';
-        return ['type' => 'audio', 'ext' => $isMp3 ? 'mp3' : 'bin'];
+        return ['type' => 'audio', 'ext' => $isMp3 ? 'mp3' : 'bin', 'probe' => $probe];
     }
     return null;
 }
@@ -227,15 +269,20 @@ function timeoutPrefix($seconds) {
     return '';
 }
 
-// Runs ffmpeg with the given arguments (each shell-escaped). Returns true on success.
-// Only the plain file protocol is allowed, so a crafted file can't make ffmpeg
-// fetch a URL or read some other path; the input must be given as file:<path>.
-function runFfmpeg($args) {
+// Runs ffmpeg on one input file with the given output arguments (each
+// shell-escaped). Returns true on success. The safe input options are always
+// added here rather than left to each caller: only the plain file protocol
+// is allowed, so a crafted file can't make ffmpeg fetch a URL or read some
+// other path, and -max_pixels makes the decoder itself refuse oversized
+// frames (a second line behind classifyMedia's header check).
+function runFfmpeg(string $inputPath, array $outputArgs): bool {
+    global $CONFIG;
     if (!function_exists('exec')) {
         logMsg("ffmpeg skipped: exec() is disabled");
         return false;
     }
     @set_time_limit(600);
+    $args = array_merge(['-max_pixels', (string)$CONFIG['media_max_pixels'], '-i', 'file:' . $inputPath], $outputArgs);
     $cmd = timeoutPrefix(300) . escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -nostdin -y -protocol_whitelist file '
         . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1';
     $output = [];
@@ -391,8 +438,8 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
         logMsg("processVideo: source is {$sourceFps}fps, capping at " . $maxFps);
     }
 
-    $converted = runFfmpeg([
-        '-i', 'file:' . $inputPath, '-t', (string)$CONFIG['media_max_seconds'],
+    $converted = runFfmpeg($inputPath, [
+        '-t', (string)$CONFIG['media_max_seconds'],
         '-map', '0:v:0', '-map', '0:a:0?', '-vf', $filters,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', "$outputBase.mp4",
@@ -410,7 +457,7 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
 // ffmpeg grabs the first frame as PNG; GD converts it to WebP.
 function createVideoThumbnail($videoPath, $thumbnailPath) {
     $png = "$thumbnailPath.png";
-    if (!runFfmpeg(['-i', 'file:' . $videoPath, '-frames:v', '1', '-vf', ffmpegScale(640), $png])) return false;
+    if (!runFfmpeg($videoPath, ['-frames:v', '1', '-vf', ffmpegScale(640), $png])) return false;
     $img = @imagecreatefrompng($png);
     @unlink($png);
     if (!$img) return false;
@@ -427,7 +474,7 @@ function processAudio($inputPath, $outputBase, $alreadyMp3) {
 
     if ($alreadyMp3) return copy($inputPath, "$outputBase.mp3") ? 'mp3' : false;
 
-    if (runFfmpeg(['-i', 'file:' . $inputPath, '-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', "$outputBase.mp3"])) return 'mp3';
+    if (runFfmpeg($inputPath, ['-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', "$outputBase.mp3"])) return 'mp3';
     @unlink("$outputBase.mp3");
     return false;
 }
@@ -436,7 +483,7 @@ function processAudio($inputPath, $outputBase, $alreadyMp3) {
 // first frame to a PNG, which processImage then handles like any other.
 // Returns the PNG's path, or false.
 function convertImageToPng($inputPath, $pngPath) {
-    return runFfmpeg(['-i', 'file:' . $inputPath, '-frames:v', '1', $pngPath]) ? $pngPath : false;
+    return runFfmpeg($inputPath, ['-frames:v', '1', $pngPath]) ? $pngPath : false;
 }
 
 function handle_uploadMedia() {
@@ -490,6 +537,7 @@ function handle_uploadMedia() {
     if (!$classified) {
         bad("That doesn't look like an image, video or audio file we can read.", 400);
     }
+    if (isset($classified['reject'])) bad($classified['reject'], 400);
     $mediaType = $classified['type'];
 
     if ($fileSize > $maxSizes[$mediaType]) {
