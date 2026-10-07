@@ -240,7 +240,7 @@ const ALLOWED_COVER_CODECS = ['mjpeg', 'png'];
 // AMR with amrnb/amrwb, and pcm_* can't be a wildcard there).
 const FFMPEG_DECODER_WHITELIST = 'h264,hevc,vp8,vp9,av1,libdav1d,libaom-av1,mpeg4,h263,'
     . 'aac,aac_fixed,mp3float,mp3,opus,libopus,vorbis,libvorbis,flac,alac,amrnb,amrwb,'
-    . 'libopencore_amrnb,libopencore_amrwb,bmp,'
+    . 'libopencore_amrnb,libopencore_amrwb,bmp,gif,'
     . 'pcm_s8,pcm_u8,pcm_s16le,pcm_s16be,pcm_u16le,pcm_u16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,'
     . 'pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,pcm_alaw,pcm_mulaw';
 
@@ -292,6 +292,20 @@ function oversizedProbe($probe, $what) {
     return null;
 }
 
+// True when a GIF has more than one frame. ffprobe stops after two packets
+// (-read_intervals %+#2), so even a long GIF is barely read. False when
+// ffmpeg isn't available: the GIF is then kept as a still image.
+function gifIsAnimated($path) {
+    if (!function_exists('exec') || !mediaCapabilities()['av']) return false;
+    $cmd = resourcePrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file -count_packets -read_intervals %+#2'
+        . ' -show_entries format=format_name:stream=codec_name,nb_read_packets -of json ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
+    $out = [];
+    exec($cmd, $out);
+    $json = json_decode(implode("\n", $out), true);
+    if (($json['format']['format_name'] ?? '') !== 'gif') return false;
+    return (int)($json['streams'][0]['nb_read_packets'] ?? 0) > 1;
+}
+
 // Works out what an uploaded file really is, from its bytes (never from the
 // client's say-so). Returns ['type' => image|video|audio, 'ext' => ...,
 // 'probe' => ffprobe's result or null], ['reject' => message] for media we
@@ -303,7 +317,13 @@ function classifyMedia($path) {
     if ($sniffed['family'] === 'image') {
         if (isset($sniffed['width'])) {
             $why = oversizedFrame($sniffed['width'], $sniffed['height'], 'image');
-            return $why ? ['reject' => $why] : ['type' => 'image', 'ext' => $sniffed['ext'], 'probe' => null];
+            if ($why) return ['reject' => $why];
+            // An animated GIF becomes a short looping silent video (D6); a
+            // single-frame one stays an image.
+            if ($sniffed['ext'] === 'gif' && gifIsAnimated($path)) {
+                return ['type' => 'video', 'ext' => 'gif', 'loop' => true, 'probe' => probeMedia($path)];
+            }
+            return ['type' => 'image', 'ext' => $sniffed['ext'], 'probe' => null];
         }
         // ffmpeg decodes this one (HEIC, AVIF, ...), so ask ffprobe for its size first.
         $probe = probeMedia($path);
@@ -662,6 +682,25 @@ function processVideo($inputPath, $outputBase, $thumbnailPath, $probe = null) {
         logMsg("processVideo: source is {$sourceFps}fps, capping at " . $maxFps);
     }
 
+    // An animated GIF (D6): silent, at most 960 px wide (plenty for a GIF),
+    // even dimensions for H.264. The same pixel limits, resource caps and -t
+    // cap apply, so a GIF with thousands of tiny frames still stops.
+    if (($probe['format']['format_name'] ?? '') === 'gif') {
+        $converted = runFfmpeg($inputPath, [
+            '-t', (string)$CONFIG['media_max_seconds'], '-map', '0:v:0', '-an',
+            '-vf', 'scale=trunc(min(iw\\,960)/2)*2:-2,format=yuv420p',
+            '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '26', '-threads', '2',
+            '-movflags', '+faststart', ...FFMPEG_STRIP_METADATA, "$outputBase.mp4",
+        ]);
+        if (!$converted) {
+            @unlink("$outputBase.mp4");
+            return false;
+        }
+        createVideoThumbnail("$outputBase.mp4", $thumbnailPath, min(probeDuration($probe), (float)$CONFIG['media_max_seconds']));
+        logMsg("processVideo SUCCESS (animated GIF): saved $outputBase.mp4");
+        return 'mp4';
+    }
+
     $encode = fn($vf) => runFfmpeg($inputPath, [
         '-t', (string)$CONFIG['media_max_seconds'],
         '-map', '0:v:0', '-map', '0:a:0?', '-vf', $vf,
@@ -876,7 +915,8 @@ function handle_uploadMedia() {
     // Checked here rather than after conversion so an over-long file is
     // rejected before spending minutes transcoding it. A duration of 0 means
     // ffprobe couldn't tell us, so it's let through.
-    if ($mediaType === 'video' || $mediaType === 'audio') {
+    // An animated GIF isn't refused for length: it's cut at the limit instead.
+    if (($mediaType === 'video' || $mediaType === 'audio') && empty($classified['loop'])) {
         $duration = probeDuration($classified['probe']);
         $maxSeconds = $CONFIG['media_max_seconds'];
         if ($duration > $maxSeconds) {
@@ -943,8 +983,8 @@ function handle_uploadMedia() {
     $pdo->beginTransaction();
     try {
         $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
-        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath]);
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, "loop") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath, empty($classified['loop']) ? 0 : 1]);
         $mediaId = $pdo->lastInsertId();
         $moved = [];
         foreach ($moves as $from => $to) {
