@@ -33,11 +33,14 @@
 //    mediaMaxSizes() below instead, called where the old array was
 //    indexed directly.
 
-// Any image, video or audio format is accepted: what the client claims
-// (Content-Type, filename) is ignored, the file is identified from its own
-// bytes (classifyMedia below), and it's converted to WebP / MP4 / MP3. The
-// old per-MIME allow-lists are gone; what keeps this safe is the signature
-// check plus the ffprobe container allow-list, not a list of file types.
+// The formats phones, browsers and normal apps produce are accepted: what
+// the client claims (Content-Type, filename) is ignored, the file is
+// identified from its own bytes (classifyMedia below), and it's converted to
+// WebP / MP4 / MP3. Old desktop/broadcast formats (AVI, FLV, WMV/ASF,
+// MPEG-TS/PS, TIFF, ICO) are refused: nobody records in them any more, and
+// their demuxers and decoders have the longest CVE history. What keeps this
+// safe is the signature check, the ffprobe container allow-list and the
+// codec allow-list (both below), not the client's word.
 
 // Limits read from $CONFIG (config.php) so they can be adjusted without
 // touching this file. A function, not a precomputed global array -- see
@@ -117,27 +120,22 @@ function sniffMedia($path) {
         return ['family' => 'av', 'ext' => 'bin'];
     }
     if (str_starts_with($h, 'RIFF')) {
-        $kind = substr($h, 8, 4);
-        if ($kind === 'WAVE') return ['family' => 'audio', 'ext' => 'bin'];
-        if ($kind === 'AVI ') return ['family' => 'av', 'ext' => 'bin'];
-        // 'WEBP' falls through to the image check below.
+        if (substr($h, 8, 4) === 'WAVE') return ['family' => 'audio', 'ext' => 'bin'];
+        // 'WEBP' falls through to the image check below; 'AVI ' is refused.
     }
     if (str_starts_with($h, 'OggS')) return ['family' => 'av', 'ext' => 'bin'];
     if (str_starts_with($h, 'fLaC')) return ['family' => 'audio', 'ext' => 'bin'];
     if (str_starts_with($h, 'ID3') || (ord($h[0]) === 0xFF && (ord($h[1]) & 0xE0) === 0xE0)) return ['family' => 'audio', 'ext' => 'bin']; // MP3 / AAC (ADTS)
     if (str_starts_with($h, 'FORM') && in_array(substr($h, 8, 4), ['AIFF', 'AIFC'], true)) return ['family' => 'audio', 'ext' => 'bin'];
     if (str_starts_with($h, 'caff')) return ['family' => 'audio', 'ext' => 'bin'];
-    if (str_starts_with($h, "\x30\x26\xB2\x75\x8E\x66\xCF\x11")) return ['family' => 'av', 'ext' => 'bin']; // ASF / WMV / WMA
-    if (str_starts_with($h, "FLV\x01")) return ['family' => 'av', 'ext' => 'bin'];
     if (str_starts_with($h, '#!AMR')) return ['family' => 'audio', 'ext' => 'bin'];
-    if (str_starts_with($h, "\x00\x00\x01\xBA") || str_starts_with($h, "\x00\x00\x01\xB3")) return ['family' => 'av', 'ext' => 'bin']; // MPEG-PS / MPEG video
-    if (strlen($h) >= 377 && $h[0] === 'G' && $h[188] === 'G' && $h[376] === 'G') return ['family' => 'av', 'ext' => 'bin']; // MPEG-TS
 
     $img = @getimagesize($path);
     $gdExt = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif', IMAGETYPE_WEBP => 'webp'];
     if ($img && isset($gdExt[$img[2]])) return ['family' => 'image', 'ext' => $gdExt[$img[2]], 'width' => $img[0], 'height' => $img[1]];
-    // BMP, TIFF, AVIF, ICO and the like: real images, but not ones GD reads.
-    if ($img && in_array($img[2], [IMAGETYPE_BMP, IMAGETYPE_TIFF_II, IMAGETYPE_TIFF_MM, IMAGETYPE_ICO, IMAGETYPE_AVIF ?? -1], true)) {
+    // BMP: a real image, but not one GD reads, so ffmpeg decodes it. (HEIC/
+    // AVIF were caught by their ftyp brand above.) TIFF, ICO and the rest are refused.
+    if ($img && $img[2] === IMAGETYPE_BMP && str_starts_with($h, 'BM')) {
         return ['family' => 'image', 'ext' => 'img'];
     }
     return null;
@@ -160,9 +158,49 @@ function probeMedia($path) {
 // Containers we're willing to hand to ffmpeg (ffprobe's format_name). A
 // belt-and-braces second check after the signature sniff above.
 const PROBE_ALLOWED_FORMATS = [
-    'mov,mp4,m4a,3gp,3g2,mj2', 'matroska,webm', 'avi', 'ogg', 'wav', 'mp3', 'flac', 'aac',
-    'flv', 'asf', 'mpegts', 'mpeg', 'mpegvideo', 'amr', 'aiff', 'caf',
+    'mov,mp4,m4a,3gp,3g2,mj2', 'matroska,webm', 'ogg', 'wav', 'mp3', 'flac', 'aac', 'aiff', 'caf', 'amr',
 ];
+
+// Codecs (ffprobe's codec_name) we accept inside those containers: a trusted
+// container can still carry any codec, and each decoder is its own attack
+// surface. Cover pictures (mjpeg/png) are allowed only as attached_pic
+// streams, which are never decoded (the conversions drop them).
+const ALLOWED_VIDEO_CODECS = ['h264', 'hevc', 'vp8', 'vp9', 'av1', 'mpeg4', 'h263'];
+const ALLOWED_AUDIO_CODECS = ['aac', 'mp3', 'opus', 'vorbis', 'flac', 'alac', 'amr_nb', 'amr_wb']; // plus pcm_*
+const ALLOWED_IMAGE_CODECS = ['hevc', 'av1', 'bmp'];     // images ffmpeg decodes (HEIC, AVIF, BMP)
+const ALLOWED_COVER_CODECS = ['mjpeg', 'png'];
+
+// The same allow-list as ffmpeg *decoder* names, for -codec_whitelist (which
+// matches decoders, not codecs: MP3 decodes with mp3float, AV1 with libdav1d,
+// AMR with amrnb/amrwb, and pcm_* can't be a wildcard there).
+const FFMPEG_DECODER_WHITELIST = 'h264,hevc,vp8,vp9,av1,libdav1d,libaom-av1,mpeg4,h263,'
+    . 'aac,aac_fixed,mp3float,mp3,opus,libopus,vorbis,libvorbis,flac,alac,amrnb,amrwb,'
+    . 'libopencore_amrnb,libopencore_amrwb,bmp,'
+    . 'pcm_s8,pcm_u8,pcm_s16le,pcm_s16be,pcm_u16le,pcm_u16be,pcm_s24le,pcm_s24be,pcm_s32le,pcm_s32be,'
+    . 'pcm_f32le,pcm_f32be,pcm_f64le,pcm_f64be,pcm_alaw,pcm_mulaw';
+
+// True when every audio/video stream in the probe uses an allowed codec.
+// Other stream kinds (data, subtitles, timecode) are ignored: the
+// conversions only ever map audio and video.
+function probeCodecsAllowed($probe, $imageOnly = false) {
+    foreach ($probe['streams'] ?? [] as $stream) {
+        $type = $stream['codec_type'] ?? '';
+        $codec = $stream['codec_name'] ?? '';
+        if ($type === 'video') {
+            if (!empty($stream['disposition']['attached_pic'])) $ok = in_array($codec, ALLOWED_COVER_CODECS, true);
+            else $ok = in_array($codec, $imageOnly ? ALLOWED_IMAGE_CODECS : ALLOWED_VIDEO_CODECS, true);
+        } elseif ($type === 'audio') {
+            $ok = !$imageOnly && (in_array($codec, ALLOWED_AUDIO_CODECS, true) || str_starts_with($codec, 'pcm_'));
+        } else {
+            continue;
+        }
+        if (!$ok) {
+            logMsg("classifyMedia: refused $type codec '$codec'");
+            return false;
+        }
+    }
+    return true;
+}
 
 // Refusal message when a width x height frame is over the pixel limits, or
 // null when it's fine. Checked from headers before anything is decoded: a
@@ -204,13 +242,14 @@ function classifyMedia($path) {
         }
         // ffmpeg decodes this one (HEIC, AVIF, ...), so ask ffprobe for its size first.
         $probe = probeMedia($path);
-        if (!$probe) return null;
+        if (!$probe || !probeCodecsAllowed($probe, true)) return null;
         $why = oversizedProbe($probe, 'image');
         return $why ? ['reject' => $why] : ['type' => 'image', 'ext' => $sniffed['ext'], 'probe' => $probe];
     }
 
     $probe = probeMedia($path);
     if (!$probe || !in_array($probe['format']['format_name'], PROBE_ALLOWED_FORMATS, true)) return null;
+    if (!probeCodecsAllowed($probe)) return null;
     $why = oversizedProbe($probe, 'video');
     if ($why) return ['reject' => $why];
 
@@ -274,7 +313,8 @@ function timeoutPrefix($seconds) {
 // added here rather than left to each caller: only the plain file protocol
 // is allowed, so a crafted file can't make ffmpeg fetch a URL or read some
 // other path, and -max_pixels makes the decoder itself refuse oversized
-// frames (a second line behind classifyMedia's header check).
+// frames (a second line behind classifyMedia's header check), and
+// -codec_whitelist makes it refuse any decoder outside the allow-list.
 function runFfmpeg(string $inputPath, array $outputArgs): bool {
     global $CONFIG;
     if (!function_exists('exec')) {
@@ -282,7 +322,11 @@ function runFfmpeg(string $inputPath, array $outputArgs): bool {
         return false;
     }
     @set_time_limit(600);
-    $args = array_merge(['-max_pixels', (string)$CONFIG['media_max_pixels'], '-i', 'file:' . $inputPath], $outputArgs);
+    $args = array_merge([
+        '-max_pixels', (string)$CONFIG['media_max_pixels'],
+        '-codec_whitelist', FFMPEG_DECODER_WHITELIST,
+        '-i', 'file:' . $inputPath,
+    ], $outputArgs);
     $cmd = timeoutPrefix(300) . escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -nostdin -y -protocol_whitelist file '
         . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1';
     $output = [];
@@ -479,7 +523,7 @@ function processAudio($inputPath, $outputBase, $alreadyMp3) {
     return false;
 }
 
-// An image GD can't read (HEIC, AVIF, BMP, TIFF, ...): ffmpeg decodes the
+// An image GD can't read (HEIC, AVIF, BMP): ffmpeg decodes the
 // first frame to a PNG, which processImage then handles like any other.
 // Returns the PNG's path, or false.
 function convertImageToPng($inputPath, $pngPath) {
@@ -535,7 +579,7 @@ function handle_uploadMedia() {
     // format works and a renamed non-media file doesn't.
     $classified = classifyMedia($tmpPath);
     if (!$classified) {
-        bad("That doesn't look like an image, video or audio file we can read.", 400);
+        bad("That file type isn't supported. Try a photo (JPEG, PNG, HEIC, WebP, GIF), a video (MP4, MOV, WebM) or audio (MP3, M4A, WAV, Ogg).", 400);
     }
     if (isset($classified['reject'])) bad($classified['reject'], 400);
     $mediaType = $classified['type'];
