@@ -56,12 +56,18 @@ function writeLog($level, $category, $message, $context = []) {
     $logFile = getLogFile($category);
     rotateLog($logFile);
 
+    // One entry per line, whatever the input: control characters (newlines
+    // included) become spaces, so a crafted filename, header or message
+    // can't forge extra log lines.
+    $clean = fn($v) => preg_replace('/[\x00-\x1F\x7F]+/', ' ', (string)$v);
+    $message = $clean($message);
+
     $timestamp = date('Y-m-d H:i:s');
-    $userId = $context['user_id'] ?? '-';
-    $url = $context['url'] ?? '-';
-    $ua = $context['user_agent'] ?? '-';
-    $ip = $context['ip'] ?? '-';
-    $contextStr = $context['extra'] ?? '';
+    $userId = $clean($context['user_id'] ?? '-');
+    $url = $clean($context['url'] ?? '-');
+    $ua = $clean($context['user_agent'] ?? '-');
+    $ip = $clean($context['ip'] ?? '-');
+    $contextStr = $clean($context['extra'] ?? '');
 
     $entry = "[$timestamp] [$level] [$category] $message | user=$userId | ip=$ip | url=$url | ua=$ua";
     if ($contextStr) $entry .= " | $contextStr";
