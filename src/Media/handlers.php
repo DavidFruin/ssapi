@@ -800,6 +800,9 @@ function handle_deleteMedia() {
     $media = $stmt->fetch(PDO::FETCH_ASSOC);
 
     if (!$media) bad('Media not found', 404);
+    // Deleting it would leave a post pointing at a missing file. Clients only
+    // delete unattached draft uploads; a post's media goes with the post.
+    if ($media['post_id'] !== null) bad('That file is attached to a post. Delete the post instead.', 409);
 
     $mediaDir = getMediaDir($uid);
     $filePath = $mediaDir . str_replace('/media/' . $uid, '', $media['path']);
