@@ -541,8 +541,10 @@ function processImage($inputPath, $outputPath, $variantPath = null) {
     // Resize so the longest side is at most media_max_side (portrait or landscape)
     $maxSide = $CONFIG['media_max_side'];
 
-    // Transparency is only kept for PNG for now (media plan D1 widens it).
-    $alpha = $inputExt === 'png';
+    // Keep transparency for every type (WebP and GIF can be transparent too;
+    // they used to come out solid black when resized). JPEG has no alpha, so
+    // this costs it nothing.
+    $alpha = true;
 
     if (max($srcWidth, $srcHeight) > $maxSide) {
         $dst = scaledCopy($src, $maxSide, $alpha);
