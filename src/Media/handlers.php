@@ -145,7 +145,7 @@ function sniffMedia($path) {
 // Returns null when ffprobe can't read it (or exec is unavailable).
 function probeMedia($path) {
     if (!function_exists('exec')) return null;
-    $cmd = timeoutPrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
+    $cmd = resourcePrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
         . ' -show_entries format=format_name,duration:stream=codec_type,codec_name,width,height:stream_disposition=attached_pic'
         . ' -of json ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
     $out = [];
@@ -271,7 +271,7 @@ const FFPROBE = '/usr/bin/ffprobe';
 // fails, which callers treat as "unknown" rather than as a failure.
 function ffprobeValue($path, $entries, $stream = false) {
     if (!function_exists('exec')) return '';
-    $cmd = timeoutPrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
+    $cmd = resourcePrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
         . ($stream ? ' -select_streams v:0' : '')
         . ' -show_entries ' . escapeshellarg($entries)
         . ' -of csv=p=0 ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
@@ -295,13 +295,46 @@ function videoFrameRate($path) {
     return (float)$den > 0 ? (float)$num / (float)$den : 0;
 }
 
-// "timeout N " when the coreutils timeout binary exists, so one bad file can't
-// tie up a PHP worker for minutes; empty otherwise.
-function timeoutPrefix($seconds) {
-    foreach (['/usr/bin/timeout', '/bin/timeout'] as $bin) {
-        if (is_executable($bin)) return escapeshellarg($bin) . ' ' . (int)$seconds . ' ';
+function firstExecutable(array $paths) {
+    foreach ($paths as $bin) {
+        if (is_executable($bin)) return $bin;
     }
-    return '';
+    return null;
+}
+
+// Command prefix for every ffmpeg/ffprobe run, so one upload can't take over
+// the server: lower CPU priority (nice 10), a memory ceiling (prlimit --as,
+// media_ffmpeg_max_mem), and a time limit (timeout). Each tool is used only
+// if it exists. MALLOC_ARENA_MAX=2 stops glibc reserving an address-space
+// arena per thread, which is most of ffmpeg's virtual size.
+function resourcePrefix($seconds) {
+    global $CONFIG;
+    $prefix = 'MALLOC_ARENA_MAX=2 ';
+    if ($nice = firstExecutable(['/usr/bin/nice', '/bin/nice'])) $prefix .= escapeshellarg($nice) . ' -n 10 ';
+    if ($prlimit = firstExecutable(['/usr/bin/prlimit', '/bin/prlimit'])) {
+        $prefix .= escapeshellarg($prlimit) . ' --as=' . (int)($CONFIG['media_ffmpeg_max_mem'] ?? 4294967296) . ' -- ';
+    }
+    if ($timeout = firstExecutable(['/usr/bin/timeout', '/bin/timeout'])) $prefix .= escapeshellarg($timeout) . ' ' . (int)$seconds . ' ';
+    return $prefix;
+}
+
+// Takes one of media_max_concurrent conversion slots (lock files under
+// private/locks), waiting up to $waitSeconds. Returns the lock handle, held
+// until the request ends (or fclose), or null if every slot stayed busy.
+function acquireMediaSlot(int $waitSeconds = 20) {
+    global $CONFIG;
+    $dir = dirname($CONFIG['db_path']) . '/locks';
+    if (!is_dir($dir)) @mkdir($dir, 0700, true);
+    $deadline = time() + $waitSeconds;
+    do {
+        for ($i = 0; $i < ($CONFIG['media_max_concurrent'] ?? 2); $i++) {
+            $fh = @fopen("$dir/media-$i.lock", 'c');
+            if ($fh && flock($fh, LOCK_EX | LOCK_NB)) return $fh;
+            if ($fh) fclose($fh);
+        }
+        usleep(250000);
+    } while (time() < $deadline);
+    return null;
 }
 
 // Runs ffmpeg on one input file with the given output arguments (each
@@ -321,9 +354,10 @@ function runFfmpeg(string $inputPath, array $outputArgs): bool {
     $args = array_merge([
         '-max_pixels', (string)$CONFIG['media_max_pixels'],
         '-codec_whitelist', FFMPEG_DECODER_WHITELIST,
+        '-threads', '2',   // decoder threads; leaves cores for the website
         '-i', 'file:' . $inputPath,
     ], $outputArgs);
-    $cmd = timeoutPrefix(300) . escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -nostdin -y -protocol_whitelist file '
+    $cmd = resourcePrefix(300) . escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -nostdin -y -protocol_whitelist file '
         . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1';
     $output = [];
     $code = 1;
@@ -488,7 +522,7 @@ function processVideo($inputPath, $outputBase, $thumbnailPath) {
     $converted = runFfmpeg($inputPath, [
         '-t', (string)$CONFIG['media_max_seconds'],
         '-map', '0:v:0', '-map', '0:a:0?', '-vf', $filters,
-        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
+        '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2',
         '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', ...FFMPEG_STRIP_METADATA, "$outputBase.mp4",
     ]);
     if (!$converted) {
@@ -645,6 +679,14 @@ function handle_uploadMedia() {
             @unlink($tempInput);
             bad("That $mediaType is " . round($duration, 1) . " seconds long. Max: $maxSeconds seconds", 400);
         }
+    }
+
+    // Only so many conversions at once, so a burst of uploads can't starve
+    // the website of CPU. Held until this request ends.
+    $slot = acquireMediaSlot();
+    if (!$slot) {
+        @unlink($tempInput);
+        bad('The server is busy processing other uploads. Please try again in a moment.', 503);
     }
 
     $thumbnailPath = "{$typeDir}/thumb_{$base}.webp";

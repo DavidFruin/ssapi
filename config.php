@@ -12,6 +12,14 @@ $CONFIG = [
     'media_max_audio_bytes' => 50 * 1024 * 1024,
     'media_max_pixels' => 50_000_000,      // ~50 MP: covers 48 MP phone photos; refuses decompression bombs
     'media_max_dimension' => 12000,        // longest side (px) of an uploaded image or video frame
+    // At most this many conversions (image, video or audio) run at once;
+    // the next upload waits up to 20 s for a slot, then gets a 503.
+    'media_max_concurrent' => 2,
+    // Address-space cap (prlimit --as) for each ffmpeg/ffprobe run. Measured
+    // 2026-10-07 with 2 threads and MALLOC_ARENA_MAX=2: a 10 s 1080p60 clip
+    // peaked at 2.4 GB virtual (343 MB resident), a 48 MP image at 2.7 GB.
+    // About 50% above the higher one.
+    'media_ffmpeg_max_mem' => 4 * 1024 * 1024 * 1024,
 
     // Max distinct @[id] mentions allowed in a single post or comment.
     'max_mentions' => 10,
