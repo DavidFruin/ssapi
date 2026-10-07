@@ -260,11 +260,7 @@ function classifyMedia($path) {
         if (($stream['codec_type'] ?? '') === 'audio') $hasAudio = true;
     }
     if ($hasVideo) return ['type' => 'video', 'ext' => 'bin', 'probe' => $probe];
-    if ($hasAudio) {
-        // An MP3 already is the target format, so it's kept as-is.
-        $isMp3 = $probe['format']['format_name'] === 'mp3';
-        return ['type' => 'audio', 'ext' => $isMp3 ? 'mp3' : 'bin', 'probe' => $probe];
-    }
+    if ($hasAudio) return ['type' => 'audio', 'ext' => 'bin', 'probe' => $probe];
     return null;
 }
 
@@ -517,13 +513,13 @@ function createVideoThumbnail($videoPath, $thumbnailPath) {
     return $ok;
 }
 
-// Converts to MP3, capped at media_max_seconds. A file that already is an MP3
-// is kept as-is. Returns 'mp3', or false when ffmpeg can't convert it.
-function processAudio($inputPath, $outputBase, $alreadyMp3) {
+// Converts to MP3, capped at media_max_seconds. Always re-encoded, MP3s
+// included: copying one through kept its tags (artist, comments), any
+// embedded cover picture and its full length when the header understated
+// it. Returns 'mp3', or false when ffmpeg can't convert it.
+function processAudio($inputPath, $outputBase) {
     global $CONFIG;
     logMsg("processAudio: input=$inputPath output=$outputBase");
-
-    if ($alreadyMp3) return copy($inputPath, "$outputBase.mp3") ? 'mp3' : false;
 
     if (runFfmpeg($inputPath, ['-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', ...FFMPEG_STRIP_METADATA, "$outputBase.mp3"])) return 'mp3';
     @unlink("$outputBase.mp3");
@@ -645,7 +641,7 @@ function handle_uploadMedia() {
     } elseif ($mediaType === 'video') {
         $ext = processVideo($tempInput, "{$typeDir}/{$base}", $thumbnailPath);
     } else {
-        $ext = processAudio($tempInput, "{$typeDir}/{$base}", $classified['ext'] === 'mp3');
+        $ext = processAudio($tempInput, "{$typeDir}/{$base}");
     }
 
     @unlink($tempInput);
