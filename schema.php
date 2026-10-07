@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -73,12 +73,49 @@ function ensureSchema($pdo) {
         $v = (int)$pdo->query('PRAGMA user_version')->fetchColumn();
         if ($v < 1) migration1($pdo);
         if ($v < 2) migration2($pdo);
+        if ($v < 3) migration3($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Moderation (access-and-public-launch plan, Step 1B): blocks between users,
+// reports of posts/comments/users, and three users columns -- frozen_at (an
+// admin suspended the account), and which terms version the user accepted
+// and when. Guarded like migration2, so re-running it is harmless.
+function migration3($pdo) {
+    $pdo->exec('CREATE TABLE IF NOT EXISTS blocks (
+        blocker_id INTEGER NOT NULL,
+        blocked_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (blocker_id, blocked_id))');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks(blocked_id)');
+
+    // snapshot: a copy of the reported text (or the reported user's email) at
+    // report time, so the moderation record survives the content being deleted.
+    // target_user_id: the author of the reported content, or the reported user.
+    $pdo->exec("CREATE TABLE IF NOT EXISTS reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reporter_id INTEGER NOT NULL,
+        target_type TEXT NOT NULL CHECK (target_type IN ('post','comment','user')),
+        target_id TEXT NOT NULL,
+        target_user_id INTEGER,
+        reason TEXT NOT NULL,
+        details TEXT,
+        snapshot TEXT,
+        created_at TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','dismissed','actioned')),
+        resolved_at TEXT, resolved_by INTEGER, resolution TEXT,
+        UNIQUE (reporter_id, target_type, target_id))");
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at)');
+
+    $have = array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!in_array('frozen_at', $have, true)) $pdo->exec('ALTER TABLE users ADD COLUMN frozen_at TEXT');
+    if (!in_array('terms_version_accepted', $have, true)) $pdo->exec('ALTER TABLE users ADD COLUMN terms_version_accepted INTEGER NOT NULL DEFAULT 0');
+    if (!in_array('terms_accepted_at', $have, true)) $pdo->exec('ALTER TABLE users ADD COLUMN terms_accepted_at TEXT');
 }
 
 // Adds push_subscriptions.kind: which delivery route a row uses. 'webpush' (the

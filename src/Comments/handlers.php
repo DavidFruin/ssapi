@@ -23,7 +23,7 @@ function handle_createComment($pdo, $user) {
     $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
     $stmt->execute([$postId]);
     $ownerId = $stmt->fetchColumn();
-    if ($ownerId === false) bad('Post not found', 404);
+    if ($ownerId === false || isHiddenFrom($pdo, $user['sub'], $ownerId)) bad('Post not found', 404);
     $ownerId = (int)$ownerId;
 
     $stmt = $pdo->prepare('INSERT INTO comments (post_id, user_id, comment_text, created_at) VALUES (?, ?, ?, ?)');
@@ -46,14 +46,17 @@ function handle_getPostComments($pdo, $user) {
     [$limit, $offset] = pageParams();
     if (!$postId) bad('Missing post ID', 400);
 
-    $stmt = $pdo->prepare('SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at DESC LIMIT ? OFFSET ?');
-    $stmt->execute([$postId, $limit, $offset]);
+    // Comments by users hidden from the viewer (blocked either way, or
+    // frozen) are left out of both the page and the total.
+    [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'c.user_id');
+    $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ?$hf ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
+    $stmt->execute(array_merge([$postId], $hp, [$limit, $offset]));
     $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $mentions = hydrateMentionsBatch($pdo, array_column($comments, 'text'));
     foreach ($comments as $i => &$comment) $comment['mentions'] = $mentions[$i];
 
-    $stmt = $pdo->prepare('SELECT COUNT(*) FROM comments WHERE post_id = ?');
-    $stmt->execute([$postId]);
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM comments c WHERE c.post_id = ?$hf");
+    $stmt->execute(array_merge([$postId], $hp));
     $totalCount = $stmt->fetchColumn();
     $hasMore = ($offset + $limit) < $totalCount;
 
@@ -80,5 +83,5 @@ function handle_getPostCommentCounts($pdo, $user) {
     $postIds = jsonIdList('postIds', 100);
     if (empty($postIds)) respond(good(['counts' => []]));
 
-    respond(good(['counts' => getCommentCountsForPostIds($pdo, $postIds)]));
+    respond(good(['counts' => getCommentCountsForPostIds($pdo, $postIds, $user['sub'])]));
 }

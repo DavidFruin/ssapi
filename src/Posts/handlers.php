@@ -78,11 +78,14 @@ function truncatePreview($text) {
 // One query for a whole page of posts, not one query per post. Grouped by
 // post id, ordered oldest-first like the old JSON array naturally was
 // (likes were always appended, never reordered).
-function getLikesForPostIds($pdo, $postIds) {
+// With $viewerId, likes from users hidden from the viewer (blocked either
+// way, or frozen) are left out.
+function getLikesForPostIds($pdo, $postIds, $viewerId = null) {
     if (empty($postIds)) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
-    $stmt = $pdo->prepare("SELECT post_id, user_id, created_at FROM post_likes WHERE post_id IN ($placeholders) ORDER BY created_at ASC");
-    $stmt->execute($postIds);
+    [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
+    $stmt = $pdo->prepare("SELECT post_id, user_id, created_at FROM post_likes WHERE post_id IN ($placeholders)$hf ORDER BY created_at ASC");
+    $stmt->execute(array_merge(array_values($postIds), $hp));
     $byPost = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
         $byPost[$row['post_id']][] = ['userId' => (int)$row['user_id'], 'timestamp' => $row['created_at']];
@@ -113,13 +116,13 @@ function handle_getPostById($pdo, $user) {
         FROM posts LEFT JOIN users ON users.id = posts.user_id WHERE posts.id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row) bad('Post not found', 404);
+    if (!$row || isHiddenFrom($pdo, $user['sub'], $row['user_id'])) bad('Post not found', 404);
 
-    $post = postRowToApi($row, getLikesForPostIds($pdo, [$postId]));
+    $post = postRowToApi($row, getLikesForPostIds($pdo, [$postId], $user['sub']));
     $post['userID'] = (int)$row['user_id'];
     $post['userEmail'] = $row['email'] ?: '';
     $post['mentions'] = hydrateMentions($pdo, $post['text']);
-    $post['commentCount'] = getCommentCountsForPostIds($pdo, [$postId])[$postId] ?? 0;
+    $post['commentCount'] = getCommentCountsForPostIds($pdo, [$postId], $user['sub'])[$postId] ?? 0;
     respond(good(['post' => $post]));
 }
 
@@ -131,8 +134,9 @@ function handle_getPostPreviews($pdo, $user) {
     }
 
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
-    $stmt = $pdo->prepare("SELECT id, text FROM posts WHERE id IN ($placeholders)");
-    $stmt->execute($postIds);
+    [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'user_id');
+    $stmt = $pdo->prepare("SELECT id, text FROM posts WHERE id IN ($placeholders)$hf");
+    $stmt->execute(array_merge($postIds, $hp));
 
     $texts = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -214,7 +218,7 @@ function handle_post($pdo, $user) {
 // literal "getMyPosts just calls getUserPosts with userId=$user['sub']"
 // dedup would have reintroduced -- exactly the redundant-query class P9
 // just removed elsewhere.
-function fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset) {
+function fetchPostsPageForUser($pdo, $viewerId, $targetId, $targetEmail, $limit, $offset) {
     $countStmt = $pdo->prepare('SELECT COUNT(*) FROM posts WHERE user_id = ?');
     $countStmt->execute([$targetId]);
     $totalCount = (int)$countStmt->fetchColumn();
@@ -223,9 +227,9 @@ function fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset) {
     $stmt->execute([$targetId]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
+    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $viewerId);
     $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
-    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
+    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'), $viewerId);
     $posts = [];
     foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
@@ -242,12 +246,13 @@ function fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset) {
 
 function handle_getMyPosts($pdo, $user) {
     [$limit, $offset] = pageParams();
-    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $user['email'], $limit, $offset)));
+    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $user['sub'], $user['email'], $limit, $offset)));
 }
 
 function handle_getUserPosts($pdo, $user) {
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0) bad('Invalid user ID', 400);
+    if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
 
     [$limit, $offset] = pageParams();
 
@@ -255,7 +260,7 @@ function handle_getUserPosts($pdo, $user) {
     $emailStmt->execute([$targetId]);
     $targetEmail = $emailStmt->fetchColumn() ?: 'User ' . $targetId;
 
-    respond(good(fetchPostsPageForUser($pdo, $targetId, $targetEmail, $limit, $offset)));
+    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $targetId, $targetEmail, $limit, $offset)));
 }
 
 function handle_fetchFollowedPosts($pdo, $user) {
@@ -268,8 +273,12 @@ function handle_fetchFollowedPosts($pdo, $user) {
     $followedData = json_decode($followsJson, true) ?? [];
 
     // Always includes $uid, so this is never empty and the IN (...) below
-    // always has at least one placeholder.
-    $followedIds = array_values(array_unique(array_merge(array_map(fn($f) => is_array($f) ? $f['id'] : $f, $followedData), [$uid])));
+    // always has at least one placeholder. Hidden users (blocked either way,
+    // or frozen) are dropped from the list itself, which keeps the query on
+    // the posts index instead of adding a NOT IN.
+    $followedIds = array_values(array_unique(array_merge(array_map(fn($f) => (int)(is_array($f) ? $f['id'] : $f), $followedData), [(int)$uid])));
+    $followedIds = array_values(array_diff($followedIds, hiddenUserIds($pdo, $uid)));
+    if (!$followedIds) $followedIds = [(int)$uid];
     $placeholders = implode(',', array_fill(0, count($followedIds), '?'));
 
     $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id IN ($placeholders)");
@@ -286,9 +295,9 @@ function handle_fetchFollowedPosts($pdo, $user) {
     $stmt->execute($followedIds);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'));
+    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $uid);
     $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
-    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'));
+    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'), $uid);
     $allPosts = [];
     foreach ($rows as $i => $row) {
         $post = postRowToApi($row, $likesByPost);
@@ -310,7 +319,7 @@ function handle_likePost($pdo, $user) {
     $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
     $stmt->execute([$postId]);
     $realOwnerId = $stmt->fetchColumn();
-    if ($realOwnerId === false) bad('Post not found', 404);
+    if ($realOwnerId === false || isHiddenFrom($pdo, $user['sub'], $realOwnerId)) bad('Post not found', 404);
     $realOwnerId = (int)$realOwnerId;
 
     // Checked against the real owner from the posts table, not the id's own
@@ -355,11 +364,12 @@ function handle_getPostLikes($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
-    $stmt = $pdo->prepare('SELECT 1 FROM posts WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
     $stmt->execute([$postId]);
-    if (!$stmt->fetchColumn()) bad('Post not found', 404);
+    $ownerId = $stmt->fetchColumn();
+    if ($ownerId === false || isHiddenFrom($pdo, $user['sub'], $ownerId)) bad('Post not found', 404);
 
-    $likes = getLikesForPostIds($pdo, [$postId])[$postId] ?? [];
+    $likes = getLikesForPostIds($pdo, [$postId], $user['sub'])[$postId] ?? [];
     respond(good(['likes' => $likes]));
 }
 

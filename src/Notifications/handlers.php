@@ -28,8 +28,10 @@ function handle_getNotifications($pdo, $user) {
     // follow/like/comment-notify yourself), but a mention can - self-mentions
     // are meant to notify like any other, so they're exempted here rather
     // than excluded by the general actor_id != recipient_id noise filter.
-    $stmt = $pdo->prepare('SELECT n.id, n.recipient_id, n.actor_id, COALESCE(u.email, n.actor_email) AS actor_email, n.type, n.post_id, n.created_at FROM notifications n LEFT JOIN users u ON n.actor_id = u.id WHERE n.recipient_id = ? AND (n.actor_id != ? OR n.type = \'mention\') ORDER BY n.created_at DESC LIMIT ? OFFSET ?');
-    $stmt->execute([$user['sub'], $user['sub'], $limit, $offset]);
+    // Nothing from users hidden from the viewer (blocked either way, or frozen).
+    [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'n.actor_id');
+    $stmt = $pdo->prepare("SELECT n.id, n.recipient_id, n.actor_id, COALESCE(u.email, n.actor_email) AS actor_email, n.type, n.post_id, n.created_at FROM notifications n LEFT JOIN users u ON n.actor_id = u.id WHERE n.recipient_id = ? AND (n.actor_id != ? OR n.type = 'mention')$hf ORDER BY n.created_at DESC LIMIT ? OFFSET ?");
+    $stmt->execute(array_merge([$user['sub'], $user['sub']], $hp, [$limit, $offset]));
     $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     // Per-row `seen`, computed the same way getUnseenNotificationCount()
@@ -57,12 +59,13 @@ function getUnseenNotificationCount($pdo, $userId) {
     $stmt->execute([$userId]);
     $lastSeen = $stmt->fetchColumn();
 
+    [$hf, $hp] = hiddenFilter($pdo, $userId, 'actor_id');
     if (!$lastSeen) {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND (actor_id != ? OR type = \'mention\')');
-        $stmt->execute([$userId, $userId]);
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND (actor_id != ? OR type = 'mention')$hf");
+        $stmt->execute(array_merge([$userId, $userId], $hp));
     } else {
-        $stmt = $pdo->prepare('SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND (actor_id != ? OR type = \'mention\') AND created_at > ?');
-        $stmt->execute([$userId, $userId, $lastSeen]);
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM notifications WHERE recipient_id = ? AND (actor_id != ? OR type = 'mention') AND created_at > ?$hf");
+        $stmt->execute(array_merge([$userId, $userId, $lastSeen], $hp));
     }
 
     return (int)$stmt->fetchColumn();

@@ -160,12 +160,43 @@ function jsonIdList($key, $max = 100, $ints = false) {
     return array_map('strval', $list);
 }
 
+// ============== VISIBILITY (blocks, frozen accounts) ==============
+// Users whose content the viewer must not see, and who must not interact
+// with the viewer: anyone the viewer blocked, anyone who blocked the viewer,
+// and every frozen account. Computed once per viewer per request.
+function hiddenUserIds($pdo, $viewerId) {
+    static $cache = [];
+    $viewerId = (int)$viewerId;
+    if (isset($cache[$viewerId])) return $cache[$viewerId];
+    $stmt = $pdo->prepare('SELECT blocked_id FROM blocks WHERE blocker_id = ?
+        UNION SELECT blocker_id FROM blocks WHERE blocked_id = ?
+        UNION SELECT id FROM users WHERE frozen_at IS NOT NULL');
+    $stmt->execute([$viewerId, $viewerId]);
+    return $cache[$viewerId] = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+}
+
+// [" AND <col> NOT IN (?,?,..)", [ids]], or ['', []] when nothing is hidden --
+// append the first to a WHERE clause and merge the second into its
+// parameters, in the same position. $column is always an identifier written
+// in the code, never user input.
+function hiddenFilter($pdo, $viewerId, $column) {
+    $ids = hiddenUserIds($pdo, $viewerId);
+    if (!$ids) return ['', []];
+    return [" AND $column NOT IN (" . implode(',', array_fill(0, count($ids), '?')) . ')', $ids];
+}
+
+function isHiddenFrom($pdo, $viewerId, $userId) {
+    return in_array((int)$userId, hiddenUserIds($pdo, $viewerId), true);
+}
+
 // ============== NOTIFICATIONS ==============
 // The one place a notification gets created: writes the row the bell icon
 // reads, then pushes it to whatever devices the recipient has enabled push
 // on. Push failures are swallowed -- a dead subscription must never break
 // the like/comment/follow that triggered it.
 function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $postId = null) {
+    // Blocked either way, or a frozen actor: nothing is stored or pushed.
+    if (isHiddenFrom($pdo, $recipientId, $actorId)) return;
     $now = date('Y-m-d H:i:s');
     if ($postId === null) {
         $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, created_at) VALUES (?, ?, ?, ?, ?)');
@@ -357,11 +388,14 @@ function hydrateMentions($pdo, $text) {
 
 // One COUNT(*) GROUP BY instead of one query per post id -- a 25-post feed
 // page used to ask getPostCommentCounts for 25 individual COUNTs.
-function getCommentCountsForPostIds($pdo, array $postIds) {
+// With $viewerId, comments the viewer can't see (blocked/frozen authors)
+// aren't counted.
+function getCommentCountsForPostIds($pdo, array $postIds, $viewerId = null) {
     if (!$postIds) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
-    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders) GROUP BY post_id");
-    $stmt->execute(array_values($postIds));
+    [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf GROUP BY post_id");
+    $stmt->execute(array_merge(array_values($postIds), $hp));
     $counts = array_fill_keys($postIds, 0);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];
     return $counts;
@@ -501,6 +535,8 @@ $HANDLERS = [
     'deletePushSubscription' => 'handle_deletePushSubscription',
     'saveExpoPushToken' => 'handle_saveExpoPushToken',
     'deleteExpoPushToken' => 'handle_deleteExpoPushToken',
+    'blockUser' => 'handle_blockUser', 'unblockUser' => 'handle_unblockUser',
+    'getBlockedUsers' => 'handle_getBlockedUsers',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',
     'revokeAllOtherSessions' => 'handle_revokeAllOtherSessions',
     'log' => 'handle_log_request'

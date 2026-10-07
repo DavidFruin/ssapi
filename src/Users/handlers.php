@@ -13,6 +13,7 @@
 function handle_getUserInfo($pdo, $user) {
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0) bad('Invalid user ID', 400);
+    if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
 
     $stmt = $pdo->prepare('SELECT email, created_at FROM users WHERE id = ?');
     $stmt->execute([$targetId]);
@@ -23,8 +24,11 @@ function handle_getUserInfo($pdo, $user) {
 }
 
 function handle_getUsers($pdo, $user) {
-    $stmt = $pdo->prepare('SELECT id, email, created_at FROM users WHERE id != ? ORDER BY email ASC');
-    $stmt->execute([$user['sub']]);
+    // Search and @mention suggestions both come from this list, so hidden
+    // users (blocked either way, or frozen) can't be found or tagged.
+    [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'id');
+    $stmt = $pdo->prepare("SELECT id, email, created_at FROM users WHERE id != ?$hf ORDER BY email ASC");
+    $stmt->execute(array_merge([$user['sub']], $hp));
     respond(good(['users' => $stmt->fetchAll(PDO::FETCH_ASSOC)]));
 }
 
@@ -34,8 +38,9 @@ function handle_getUserEmails($pdo, $user) {
     if (empty($userIds)) respond(good(['emails' => []]));
 
     $placeholders = implode(',', array_fill(0, count($userIds), '?'));
-    $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");
-    $stmt->execute($userIds);
+    [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'id');
+    $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)$hf");
+    $stmt->execute(array_merge($userIds, $hp));
     $emails = [];
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) $emails[$row['id']] = $row['email'];
     respond(good(['emails' => $emails]));

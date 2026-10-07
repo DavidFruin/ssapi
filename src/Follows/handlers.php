@@ -13,11 +13,14 @@
 function handle_getMyFollowers($pdo, $user) {
     $targetId = isset($_POST['userId']) ? (int)$_POST['userId'] : $user['sub'];
     if ($targetId <= 0) bad('Invalid user ID', 400);
+    if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
+    $hidden = hiddenUserIds($pdo, $user['sub']);
 
     $stmt = $pdo->prepare('SELECT id, email, follows FROM users WHERE id != ?');
     $stmt->execute([$targetId]);
     $followers = [];
     while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
+        if (in_array((int)$row['id'], $hidden, true)) continue;
         $followsData = $row['follows'] ? json_decode($row['follows'], true) : [];
         foreach ($followsData as $f) {
             if ((is_array($f) ? $f['id'] : $f) == $targetId) {
@@ -32,13 +35,14 @@ function handle_getMyFollowers($pdo, $user) {
 function handle_getMyFollows($pdo, $user) {
     $targetId = isset($_POST['userId']) ? (int)$_POST['userId'] : $user['sub'];
     if ($targetId <= 0) bad('Invalid user ID', 400);
+    if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
 
     $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
     $stmt->execute([$targetId]);
     $followsJson = $stmt->fetchColumn() ?: '[]';
     $followsData = json_decode($followsJson, true) ?? [];
     $result = [];
-    $ids = array_map(fn($f) => is_array($f) ? $f['id'] : $f, $followsData);
+    $ids = array_values(array_diff(array_map(fn($f) => (int)(is_array($f) ? $f['id'] : $f), $followsData), hiddenUserIds($pdo, $user['sub'])));
 
     if (!empty($ids)) {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
@@ -60,6 +64,7 @@ function handle_getMyFollows($pdo, $user) {
 function handle_followUser($pdo, $user) {
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0 || $targetId == $user['sub']) bad('Invalid user ID', 400);
+    if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
 
     $uid = $user['sub'];
     $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
