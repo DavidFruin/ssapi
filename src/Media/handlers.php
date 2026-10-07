@@ -63,6 +63,8 @@ function mediaMaxSizes() {
 function handle_getMediaLimits($pdo, $user) {
     global $CONFIG;
     respond(good([
+        'storageUsedBytes' => mediaBytesUsed($pdo, $user['sub']),
+        'storageLimitBytes' => $CONFIG['media_max_user_bytes'],
         'maxSeconds' => $CONFIG['media_max_seconds'],
         'maxFps' => $CONFIG['media_max_fps'],
         'maxSide' => $CONFIG['media_max_side'],
@@ -70,6 +72,62 @@ function handle_getMediaLimits($pdo, $user) {
         'maxVideoBytes' => $CONFIG['media_max_video_bytes'],
         'maxAudioBytes' => $CONFIG['media_max_audio_bytes'],
     ]));
+}
+
+// Total stored bytes for a user. Rows from before the bytes column (NULL)
+// count as 0 until bin/media-backfill.php --bytes fills them.
+function mediaBytesUsed($pdo, $userId) {
+    $s = $pdo->prepare('SELECT COALESCE(SUM(bytes), 0) FROM media WHERE user_id = ?');
+    $s->execute([$userId]);
+    return (int)$s->fetchColumn();
+}
+
+// "1 GB", "500 MB": the quota in the message follows the config value.
+function formatStorageLimit($bytes) {
+    if ($bytes >= 1073741824 && $bytes % 1073741824 === 0) return ($bytes / 1073741824) . ' GB';
+    if ($bytes >= 1073741824) return round($bytes / 1073741824, 1) . ' GB';
+    return round($bytes / 1048576) . ' MB';
+}
+
+function rejectOverQuota() {
+    global $CONFIG;
+    $limit = formatStorageLimit($CONFIG['media_max_user_bytes']);
+    bad("You have reached your media storage limit of $limit of media.", 413, ['code' => 'media_quota']);
+}
+
+// Every file a media row owns: the file itself, a video's thumbnail, and the
+// feed variant and poster when set.
+function mediaRowFiles($row) {
+    $files = [];
+    $main = mediaFilePath($row['path']);
+    if ($main !== null) {
+        $files[] = $main;
+        if ($row['type'] === 'video') $files[] = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $main);
+    }
+    foreach (['variant_path', 'poster_path'] as $col) {
+        $f = !empty($row[$col]) ? mediaFilePath($row[$col]) : null;
+        if ($f !== null) $files[] = $f;
+    }
+    return array_values(array_unique($files));
+}
+
+// Deletes uploads never attached to a post within 24 h (abandoned drafts,
+// crashed clients): files and rows. For one user, or for anyone when
+// $userId is null. Returns how many were removed.
+function sweepOrphanMedia($pdo, $userId = null, $limit = 50) {
+    $cutoff = date('Y-m-d H:i:s', time() - 86400);
+    $sql = 'SELECT * FROM media WHERE post_id IS NULL AND created_at < ?' . ($userId !== null ? ' AND user_id = ?' : '') . ' LIMIT ' . (int)$limit;
+    $s = $pdo->prepare($sql);
+    $s->execute($userId !== null ? [$cutoff, $userId] : [$cutoff]);
+    $rows = $s->fetchAll(PDO::FETCH_ASSOC);
+    $del = $pdo->prepare('DELETE FROM media WHERE id = ? AND post_id IS NULL');
+    foreach ($rows as $r) {
+        $del->execute([$r['id']]);
+        if ($del->rowCount() === 0) continue; // attached in the meantime
+        foreach (mediaRowFiles($r) as $f) if (file_exists($f)) @unlink($f);
+    }
+    if ($rows) logMsg('sweepOrphanMedia: removed ' . count($rows) . ' unattached upload(s)' . ($userId !== null ? " for user $userId" : ''));
+    return count($rows);
 }
 
 function getMediaDir($userId) {
@@ -641,6 +699,18 @@ function handle_uploadMedia() {
         }
     }
 
+    $pdo = db();
+    throttleSend($pdo, "upload:$uid", $CONFIG['media_uploads_per_hour'] ?? 60, 3600, 'Too many uploads. Try again later.');
+
+    // The user's expired drafts first, so they don't hold quota; now and then
+    // everyone's, so dormant accounts get cleaned too.
+    sweepOrphanMedia($pdo, $uid);
+    if (random_int(1, 100) === 1) sweepOrphanMedia($pdo, null, 50);
+
+    // Already full: refuse before spending any CPU on it.
+    $used = mediaBytesUsed($pdo, $uid);
+    if ($used >= $CONFIG['media_max_user_bytes']) rejectOverQuota();
+
     $file = $_FILES['file'];
     $tmpPath = $file['tmp_name'];
     $fileSize = $file['size'];
@@ -752,8 +822,9 @@ function handle_uploadMedia() {
     // Everything this upload stores counts toward the user's quota (B3),
     // the video thumbnail included.
     $bytes = array_sum(array_map(fn($f) => (int)@filesize($f), array_keys($moves)));
+    // This one would take the user over: the staged files are removed on exit.
+    if ($used + $bytes > $CONFIG['media_max_user_bytes']) rejectOverQuota();
 
-    $pdo = db();
     $path = "/media/{$uid}/{$mediaType}/{$filename}";
     $pdo->beginTransaction();
     try {
@@ -804,14 +875,7 @@ function handle_deleteMedia() {
     // delete unattached draft uploads; a post's media goes with the post.
     if ($media['post_id'] !== null) bad('That file is attached to a post. Delete the post instead.', 409);
 
-    $mediaDir = getMediaDir($uid);
-    $filePath = $mediaDir . str_replace('/media/' . $uid, '', $media['path']);
-    if (file_exists($filePath)) unlink($filePath);
-
-    if ($media['type'] === 'video') {
-        $fullThumbPath = $mediaDir . '/video/thumb_' . pathinfo($media['path'], PATHINFO_FILENAME) . '.webp';
-        if (file_exists($fullThumbPath)) unlink($fullThumbPath);
-    }
+    foreach (mediaRowFiles($media) as $f) if (file_exists($f)) unlink($f);
 
     $stmt = $pdo->prepare('DELETE FROM media WHERE id = ?');
     $stmt->execute([$mediaId]);

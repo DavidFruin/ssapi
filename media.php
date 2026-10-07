@@ -36,10 +36,12 @@ function respond($data, $code = 200) {
     exit;
 }
 
-function bad($msg, $code = 400) {
+// $extra adds fields to the error, e.g. ['code' => 'media_quota'] so a
+// client can tell that case apart without matching the message text.
+function bad($msg, $code = 400, $extra = []) {
     global $action;
     logMsg("ERROR: action=$action msg=$msg");
-    respond(['valid' => false, 'message' => $msg], $code);
+    respond(array_merge(['valid' => false, 'message' => $msg], $extra), $code);
 }
 
 function good($data = []) {

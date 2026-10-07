@@ -15,6 +15,10 @@ $CONFIG = [
     // At most this many conversions (image, video or audio) run at once;
     // the next upload waits up to 20 s for a slot, then gets a 503.
     'media_max_concurrent' => 2,
+    // Everything a user has stored (files, thumbnails, variants) counts.
+    // Dave, 2026-10-07: 1 GB. The error message is built from this value.
+    'media_max_user_bytes' => 1024 * 1024 * 1024,
+    'media_uploads_per_hour' => 60,
     // Address-space cap (prlimit --as) for each ffmpeg/ffprobe run. Measured
     // 2026-10-07 with 2 threads and MALLOC_ARENA_MAX=2: a 10 s 1080p60 clip
     // peaked at 2.4 GB virtual (343 MB resident), a 48 MP image at 2.7 GB.
