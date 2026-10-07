@@ -629,6 +629,23 @@ function processImage($inputPath, $outputPath, $variantPath = null) {
 // when ffmpeg can't convert it (the caller rejects the upload; the original
 // is never kept, because once any format is accepted an unconverted original
 // would be a file nobody can play).
+// HDR phone video (HLG or PQ transfer) shown as ordinary video looks washed
+// out unless it's tone-mapped to standard (BT.709) colour. The input's
+// colour settings are stated explicitly: a file whose frames don't carry
+// them otherwise fails with "no path between colorspaces". Needs ffmpeg's
+// zscale filter (zimg). Returns the filter prefix, or '' for SDR video.
+function hdrToneMapFilter($probe) {
+    $transfer = (string)(probeVideoStream($probe)['color_transfer'] ?? '');
+    if (!in_array($transfer, ['arib-std-b67', 'smpte2084'], true)) return '';
+    if (!mediaCapabilities()['zscale']) {
+        writeLog('WARN', 'media', "HDR source ($transfer) converted without tone mapping: ffmpeg has no zscale filter");
+        return '';
+    }
+    logMsg("processVideo: HDR source ($transfer), tone-mapping to BT.709");
+    return "zscale=tin=$transfer:min=bt2020nc:pin=bt2020:rin=tv:t=linear:npl=100:p=bt2020:m=bt2020nc,format=gbrpf32le,"
+        . 'zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p,';
+}
+
 function processVideo($inputPath, $outputBase, $thumbnailPath, $probe = null) {
     global $CONFIG;
     logMsg("processVideo: input=$inputPath output=$outputBase");
@@ -645,12 +662,20 @@ function processVideo($inputPath, $outputBase, $thumbnailPath, $probe = null) {
         logMsg("processVideo: source is {$sourceFps}fps, capping at " . $maxFps);
     }
 
-    $converted = runFfmpeg($inputPath, [
+    $encode = fn($vf) => runFfmpeg($inputPath, [
         '-t', (string)$CONFIG['media_max_seconds'],
-        '-map', '0:v:0', '-map', '0:a:0?', '-vf', $filters,
+        '-map', '0:v:0', '-map', '0:a:0?', '-vf', $vf,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p', '-threads', '2',
         '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', ...FFMPEG_STRIP_METADATA, "$outputBase.mp4",
     ]);
+
+    $toneMap = hdrToneMapFilter($probe);
+    $converted = $encode($toneMap . $filters);
+    if (!$converted && $toneMap !== '') {
+        // Washed-out colour beats refusing the video.
+        writeLog('WARN', 'media', 'HDR tone mapping failed; converting without it');
+        $converted = $encode($filters);
+    }
     if (!$converted) {
         @unlink("$outputBase.mp4");
         return false;
