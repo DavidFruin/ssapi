@@ -83,6 +83,14 @@ function handle_getVapidPublicKey($pdo, $user) {
     respond(good(['key' => $CONFIG['vapid_public'] ?? '']));
 }
 
+// Keeps at most 10 push targets per user, newest first, so a misbehaving or
+// malicious client can't pile up an unbounded number of them.
+function capPushSubscriptions($pdo, $userId) {
+    $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
+        (SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 10)')
+        ->execute([$userId, $userId]);
+}
+
 function handle_savePushSubscription($pdo, $user) {
     $endpoint = trim($_POST['endpoint'] ?? '');
     $p256dh = trim($_POST['p256dh'] ?? '');
@@ -93,14 +101,9 @@ function handle_savePushSubscription($pdo, $user) {
 
     // Recorded against the session that enabled it, so revoking a device
     // also silences its notifications.
-    $stmt = $pdo->prepare('INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?)');
+    $stmt = $pdo->prepare("INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, ?, ?, ?, ?, 'webpush')");
     $stmt->execute([$user['sub'], $endpoint, $p256dh, $auth, date('Y-m-d H:i:s'), $user['sid'] ?? null]);
-
-    // Caps subscription rows per user so a misbehaving or malicious client
-    // can't pile up an unbounded number of push targets.
-    $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
-        (SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 10)')
-        ->execute([$user['sub'], $user['sub']]);
+    capPushSubscriptions($pdo, $user['sub']);
 
     respond(good(['message' => 'Push enabled']));
 }
@@ -109,7 +112,34 @@ function handle_deletePushSubscription($pdo, $user) {
     $endpoint = trim($_POST['endpoint'] ?? '');
     if (!$endpoint) bad('Missing endpoint', 400);
 
-    $stmt = $pdo->prepare('DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ?');
+    $stmt = $pdo->prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ? AND kind = 'webpush'");
     $stmt->execute([$endpoint, $user['sub']]);
+    respond(good(['message' => 'Push disabled']));
+}
+
+// The phone app's push token ("ExponentPushToken[...]"), which Expo's push
+// service turns into an FCM (Android) or APNs (iOS) message. The token goes in
+// the endpoint column (it is unique per device install); the web-push key
+// columns are unused and left empty. Like web push, it's tied to the session
+// that registered it, so logging out or revoking that device removes it. A
+// token already registered by someone else on the same phone moves to the
+// account that's logged in now.
+function handle_saveExpoPushToken($pdo, $user) {
+    $token = trim($_POST['token'] ?? '');
+    if (!preg_match('/^ExponentPushToken\[[A-Za-z0-9_-]+\]$/', $token)) bad('Invalid push token', 400);
+
+    $stmt = $pdo->prepare("INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, '', '', ?, ?, 'expo')");
+    $stmt->execute([$user['sub'], $token, date('Y-m-d H:i:s'), $user['sid'] ?? null]);
+    capPushSubscriptions($pdo, $user['sub']);
+
+    respond(good(['message' => 'Push enabled']));
+}
+
+function handle_deleteExpoPushToken($pdo, $user) {
+    $token = trim($_POST['token'] ?? '');
+    if (!$token) bad('Missing token', 400);
+
+    $stmt = $pdo->prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND user_id = ? AND kind = 'expo'");
+    $stmt->execute([$token, $user['sub']]);
     respond(good(['message' => 'Push disabled']));
 }

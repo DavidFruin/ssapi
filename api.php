@@ -198,14 +198,26 @@ function notificationText($actorEmail, $type) {
 
 function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId) {
     global $CONFIG;
-    if (empty($CONFIG['vapid_public']) || empty($CONFIG['vapid_private'])) return;
 
-    $stmt = $pdo->prepare('SELECT endpoint, p256dh, auth FROM push_subscriptions WHERE user_id = ?');
+    $stmt = $pdo->prepare('SELECT endpoint, p256dh, auth, kind FROM push_subscriptions WHERE user_id = ?');
     $stmt->execute([$recipientId]);
     $subscriptions = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (!$subscriptions) return;
 
     $url = $postId ? "/app.html#/post/$postId" : "/app.html#/profile/$actorId";
+    $text = notificationText($actorEmail, $type);
+    $count = getUnseenNotificationCount($pdo, $recipientId);
+
+    // The phone app's tokens go through Expo's push service. This branches on
+    // kind BEFORE sendWebPush(), whose endpoint check would reject them.
+    $expoTokens = [];
+    foreach ($subscriptions as $sub) {
+        if (($sub['kind'] ?? 'webpush') === 'expo') $expoTokens[] = $sub['endpoint'];
+    }
+    if ($expoTokens) sendExpoPush($pdo, $expoTokens, 'Simple Social', $text, $url, $count);
+
+    if (empty($CONFIG['vapid_public']) || empty($CONFIG['vapid_private'])) return;
+
     // The service worker re-asserts this count against the OS home-screen
     // badge on every notification event it sees (shown, clicked, swiped
     // away) - the badge is only ever meant to change via "mark as read", so
@@ -213,19 +225,65 @@ function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $acto
     // the OS did on its own.
     $payload = [
         'title' => 'Simple Social',
-        'body' => notificationText($actorEmail, $type),
+        'body' => $text,
         'url' => $url,
-        'count' => getUnseenNotificationCount($pdo, $recipientId),
+        'count' => $count,
     ];
     $subject = $CONFIG['vapid_subject'] ?? 'noreply@davidfruin.com';
 
     foreach ($subscriptions as $sub) {
+        if (($sub['kind'] ?? 'webpush') !== 'webpush') continue;
         $status = sendWebPush($sub, $payload, $subject);
         logMsg("push to user $recipientId status=$status");
         // The push service says this subscription no longer exists.
         if ($status === 404 || $status === 410) {
             $del = $pdo->prepare('DELETE FROM push_subscriptions WHERE endpoint = ?');
             $del->execute([$sub['endpoint']]);
+        }
+    }
+}
+
+// Sends one notification to every Expo token in $tokens with a single request
+// to Expo's push service (which forwards to FCM/APNs). Expo answers with one
+// ticket per message, in order; a "DeviceNotRegistered" ticket means the app
+// was uninstalled or the token is dead, so that row is deleted. exp.host is
+// the only host this ever talks to, same restriction as web push's allow-list.
+// 'badge' is the unseen count, so the app icon shows the real number.
+function sendExpoPush($pdo, array $tokens, $title, $body, $url, $count) {
+    global $CONFIG;
+    // Overridable for tests only (a local mock); never set in production.
+    $endpoint = $CONFIG['expo_push_url'] ?? 'https://exp.host/--/api/v2/push/send';
+
+    $messages = array_map(fn($token) => [
+        'to' => $token,
+        'title' => $title,
+        'body' => $body,
+        'data' => ['url' => $url],
+        'badge' => $count,
+        'sound' => 'default',
+        'priority' => 'high',
+    ], $tokens);
+
+    $ch = curl_init($endpoint);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($messages),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Accept: application/json'],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_PROTOCOLS => isset($CONFIG['expo_push_url']) ? (CURLPROTO_HTTP | CURLPROTO_HTTPS) : CURLPROTO_HTTPS,
+        CURLOPT_FOLLOWLOCATION => false,
+        CURLOPT_CONNECTTIMEOUT => 2,
+        CURLOPT_TIMEOUT => 4,
+    ]);
+    $response = curl_exec($ch);
+    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    logMsg("expo push to " . count($tokens) . " token(s) status=$status");
+
+    $tickets = json_decode((string)$response, true)['data'] ?? [];
+    foreach ($tickets as $i => $ticket) {
+        if (($ticket['details']['error'] ?? '') === 'DeviceNotRegistered' && isset($tokens[$i])) {
+            $pdo->prepare("DELETE FROM push_subscriptions WHERE endpoint = ? AND kind = 'expo'")->execute([$tokens[$i]]);
         }
     }
 }
@@ -441,6 +499,8 @@ $HANDLERS = [
     'getVapidPublicKey' => 'handle_getVapidPublicKey',
     'savePushSubscription' => 'handle_savePushSubscription',
     'deletePushSubscription' => 'handle_deletePushSubscription',
+    'saveExpoPushToken' => 'handle_saveExpoPushToken',
+    'deleteExpoPushToken' => 'handle_deleteExpoPushToken',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',
     'revokeAllOtherSessions' => 'handle_revokeAllOtherSessions',
     'log' => 'handle_log_request'

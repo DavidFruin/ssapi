@@ -67,6 +67,11 @@ $CONFIG['vapid_private'] = getenv('VAPID_PRIVATE_KEY') ?: ($_ENV['VAPID_PRIVATE_
 // actually set it -- it fell back to its own hard-coded default every time.
 $CONFIG['vapid_subject'] = getenv('VAPID_SUBJECT') ?: ($_ENV['VAPID_SUBJECT'] ?? null);
 
+// Test-only: point Expo push (the phone app) at a local mock instead of
+// exp.host. Leave unset in production, where the real service is used and only
+// HTTPS is allowed.
+if (getenv('EXPO_PUSH_URL')) $CONFIG['expo_push_url'] = getenv('EXPO_PUSH_URL');
+
 // Off by default (S10) -- was hard-coded true, which meant every request
 // logged emails, IPs, post snippets and session ids into api.log forever
 // (no rotation until S10 below), on every host including prod.

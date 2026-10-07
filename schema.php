@@ -230,6 +230,18 @@ function ensureSharedSchema($pdo) {
         }
     } catch (Exception $e) {}
 
+    // Which delivery route a row uses: 'webpush' (a browser's VAPID push
+    // endpoint, the default for every existing row) or 'expo' (the phone app's
+    // Expo push token, sent through Expo's push service).
+    try {
+        $cols = $pdo->query("PRAGMA table_info(push_subscriptions)")->fetchAll(PDO::FETCH_ASSOC);
+        if ($cols) {
+            $hasKind = false;
+            foreach ($cols as $c) if ($c['name'] === 'kind') $hasKind = true;
+            if (!$hasKind) $pdo->exec("ALTER TABLE push_subscriptions ADD COLUMN kind TEXT NOT NULL DEFAULT 'webpush'");
+        }
+    } catch (Exception $e) {}
+
     // Real posts table, replacing the legacy users.posts JSON blob (that
     // column is still there, unread, as a fallback -- see the simple-social
     // war-table note's "Open -- database" section for dropping it).
