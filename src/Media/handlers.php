@@ -33,9 +33,11 @@
 //    mediaMaxSizes() below instead, called where the old array was
 //    indexed directly.
 
-const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-const ALLOWED_VIDEO_TYPES = ['video/quicktime', 'video/mp4', 'video/m4v', 'video/webm'];
-const ALLOWED_AUDIO_TYPES = ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/webm'];
+// Any image, video or audio format is accepted: what the client claims
+// (Content-Type, filename) is ignored, the file is identified from its own
+// bytes (classifyMedia below), and it's converted to WebP / MP4 / MP3. The
+// old per-MIME allow-lists are gone; what keeps this safe is the signature
+// check plus the ffprobe container allow-list, not a list of file types.
 
 // Limits read from $CONFIG (config.php) so they can be adjusted without
 // touching this file. A function, not a precomputed global array -- see
@@ -85,28 +87,103 @@ function ensureMediaDir($userId, $type) {
     return $dir;
 }
 
-function getMediaType($mimeType) {
-    if (in_array($mimeType, ALLOWED_IMAGE_TYPES)) return 'image';
-    if (in_array($mimeType, ALLOWED_VIDEO_TYPES)) return 'video';
-    if (in_array($mimeType, ALLOWED_AUDIO_TYPES)) return 'audio';
-    return null;
-}
-
 // Real container/format from the file's first bytes; ignores whatever the
 // client claimed via Content-Type or filename. Needs no extension and no
 // fileinfo/mbstring extension, neither of which can be assumed on every
 // host this runs on. Returns ['family' => image|av|audio, 'ext' => ...]
 // or null if nothing recognized the content.
+//
+// Only files that start with a known BINARY signature get through. Text-ish
+// containers that can make ffmpeg read other files or URLs (HLS/M3U8,
+// ffconcat, DASH/XML, SVG, SDP) have no such signature, so they never reach
+// ffmpeg at all.
+//
+// family 'av' means "a container that might hold video, audio or both" --
+// classifyMedia asks ffprobe which. ext is 'img' for an image GD can't read
+// (converted by ffmpeg first) and 'bin' where the extension doesn't matter.
 function sniffMedia($path) {
-    $h = @file_get_contents($path, false, null, 0, 16);
+    $h = @file_get_contents($path, false, null, 0, 512);
     if ($h === false || strlen($h) < 12) return null;
-    if (str_starts_with($h, "\x1A\x45\xDF\xA3")) return ['family' => 'av', 'ext' => 'webm'];
-    if (substr($h, 4, 4) === 'ftyp') return ['family' => 'av', 'ext' => substr($h, 8, 4) === 'qt  ' ? 'mov' : 'mp4'];
-    if (str_starts_with($h, 'RIFF') && substr($h, 8, 4) === 'WAVE') return ['family' => 'audio', 'ext' => 'wav'];
-    if (str_starts_with($h, 'ID3') || (ord($h[0]) === 0xFF && (ord($h[1]) & 0xE0) === 0xE0)) return ['family' => 'audio', 'ext' => 'mp3'];
+
+    if (str_starts_with($h, "\x1A\x45\xDF\xA3")) return ['family' => 'av', 'ext' => 'bin'];            // Matroska / WebM
+    if (substr($h, 4, 4) === 'ftyp') {                                                                  // MP4 / MOV / M4A / 3GP / HEIC
+        $brand = substr($h, 8, 4);
+        if (in_array($brand, ['heic', 'heix', 'heim', 'heis', 'hevm', 'hevs', 'mif1', 'msf1', 'avif', 'avis'], true)) {
+            return ['family' => 'image', 'ext' => 'img'];
+        }
+        return ['family' => 'av', 'ext' => 'bin'];
+    }
+    if (str_starts_with($h, 'RIFF')) {
+        $kind = substr($h, 8, 4);
+        if ($kind === 'WAVE') return ['family' => 'audio', 'ext' => 'bin'];
+        if ($kind === 'AVI ') return ['family' => 'av', 'ext' => 'bin'];
+        // 'WEBP' falls through to the image check below.
+    }
+    if (str_starts_with($h, 'OggS')) return ['family' => 'av', 'ext' => 'bin'];
+    if (str_starts_with($h, 'fLaC')) return ['family' => 'audio', 'ext' => 'bin'];
+    if (str_starts_with($h, 'ID3') || (ord($h[0]) === 0xFF && (ord($h[1]) & 0xE0) === 0xE0)) return ['family' => 'audio', 'ext' => 'bin']; // MP3 / AAC (ADTS)
+    if (str_starts_with($h, 'FORM') && in_array(substr($h, 8, 4), ['AIFF', 'AIFC'], true)) return ['family' => 'audio', 'ext' => 'bin'];
+    if (str_starts_with($h, 'caff')) return ['family' => 'audio', 'ext' => 'bin'];
+    if (str_starts_with($h, "\x30\x26\xB2\x75\x8E\x66\xCF\x11")) return ['family' => 'av', 'ext' => 'bin']; // ASF / WMV / WMA
+    if (str_starts_with($h, "FLV\x01")) return ['family' => 'av', 'ext' => 'bin'];
+    if (str_starts_with($h, '#!AMR')) return ['family' => 'audio', 'ext' => 'bin'];
+    if (str_starts_with($h, "\x00\x00\x01\xBA") || str_starts_with($h, "\x00\x00\x01\xB3")) return ['family' => 'av', 'ext' => 'bin']; // MPEG-PS / MPEG video
+    if (strlen($h) >= 377 && $h[0] === 'G' && $h[188] === 'G' && $h[376] === 'G') return ['family' => 'av', 'ext' => 'bin']; // MPEG-TS
+
     $img = @getimagesize($path);
-    $imgExt = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif', IMAGETYPE_WEBP => 'webp'];
-    if ($img && isset($imgExt[$img[2]])) return ['family' => 'image', 'ext' => $imgExt[$img[2]]];
+    $gdExt = [IMAGETYPE_JPEG => 'jpg', IMAGETYPE_PNG => 'png', IMAGETYPE_GIF => 'gif', IMAGETYPE_WEBP => 'webp'];
+    if ($img && isset($gdExt[$img[2]])) return ['family' => 'image', 'ext' => $gdExt[$img[2]]];
+    // BMP, TIFF, AVIF, ICO and the like: real images, but not ones GD reads.
+    if ($img && in_array($img[2], [IMAGETYPE_BMP, IMAGETYPE_TIFF_II, IMAGETYPE_TIFF_MM, IMAGETYPE_ICO, IMAGETYPE_AVIF ?? -1], true)) {
+        return ['family' => 'image', 'ext' => 'img'];
+    }
+    return null;
+}
+
+// What ffprobe finds inside a file: container name plus each stream's kind.
+// Returns null when ffprobe can't read it (or exec is unavailable).
+function probeMedia($path) {
+    if (!function_exists('exec')) return null;
+    $cmd = timeoutPrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
+        . ' -show_entries format=format_name,duration:stream=codec_type,codec_name:stream_disposition=attached_pic'
+        . ' -of json ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
+    $out = [];
+    exec($cmd, $out);
+    $json = json_decode(implode("\n", $out), true);
+    if (!is_array($json) || !isset($json['format']['format_name'])) return null;
+    return $json;
+}
+
+// Containers we're willing to hand to ffmpeg (ffprobe's format_name). A
+// belt-and-braces second check after the signature sniff above.
+const PROBE_ALLOWED_FORMATS = [
+    'mov,mp4,m4a,3gp,3g2,mj2', 'matroska,webm', 'avi', 'ogg', 'wav', 'mp3', 'flac', 'aac',
+    'flv', 'asf', 'mpegts', 'mpeg', 'mpegvideo', 'amr', 'aiff', 'caf',
+];
+
+// Works out what an uploaded file really is, from its bytes (never from the
+// client's say-so). Returns ['type' => image|video|audio, 'ext' => ...] or
+// null when it isn't recognizable media we're willing to process.
+function classifyMedia($path) {
+    $sniffed = sniffMedia($path);
+    if (!$sniffed) return null;
+    if ($sniffed['family'] === 'image') return ['type' => 'image', 'ext' => $sniffed['ext']];
+
+    $probe = probeMedia($path);
+    if (!$probe || !in_array($probe['format']['format_name'], PROBE_ALLOWED_FORMATS, true)) return null;
+
+    $hasVideo = false;
+    $hasAudio = false;
+    foreach ($probe['streams'] ?? [] as $stream) {
+        if (($stream['codec_type'] ?? '') === 'video' && empty($stream['disposition']['attached_pic'])) $hasVideo = true;
+        if (($stream['codec_type'] ?? '') === 'audio') $hasAudio = true;
+    }
+    if ($hasVideo) return ['type' => 'video', 'ext' => 'bin'];
+    if ($hasAudio) {
+        // An MP3 already is the target format, so it's kept as-is.
+        $isMp3 = $probe['format']['format_name'] === 'mp3';
+        return ['type' => 'audio', 'ext' => $isMp3 ? 'mp3' : 'bin'];
+    }
     return null;
 }
 
@@ -117,10 +194,10 @@ const FFPROBE = '/usr/bin/ffprobe';
 // fails, which callers treat as "unknown" rather than as a failure.
 function ffprobeValue($path, $entries, $stream = false) {
     if (!function_exists('exec')) return '';
-    $cmd = escapeshellarg(FFPROBE) . ' -v error'
+    $cmd = timeoutPrefix(20) . escapeshellarg(FFPROBE) . ' -v error -protocol_whitelist file'
         . ($stream ? ' -select_streams v:0' : '')
         . ' -show_entries ' . escapeshellarg($entries)
-        . ' -of csv=p=0 ' . escapeshellarg($path) . ' 2>/dev/null';
+        . ' -of csv=p=0 ' . escapeshellarg('file:' . $path) . ' 2>/dev/null';
     $out = [];
     exec($cmd, $out);
     return trim($out[0] ?? '');
@@ -141,14 +218,25 @@ function videoFrameRate($path) {
     return (float)$den > 0 ? (float)$num / (float)$den : 0;
 }
 
+// "timeout N " when the coreutils timeout binary exists, so one bad file can't
+// tie up a PHP worker for minutes; empty otherwise.
+function timeoutPrefix($seconds) {
+    foreach (['/usr/bin/timeout', '/bin/timeout'] as $bin) {
+        if (is_executable($bin)) return escapeshellarg($bin) . ' ' . (int)$seconds . ' ';
+    }
+    return '';
+}
+
 // Runs ffmpeg with the given arguments (each shell-escaped). Returns true on success.
+// Only the plain file protocol is allowed, so a crafted file can't make ffmpeg
+// fetch a URL or read some other path; the input must be given as file:<path>.
 function runFfmpeg($args) {
     if (!function_exists('exec')) {
         logMsg("ffmpeg skipped: exec() is disabled");
         return false;
     }
     @set_time_limit(600);
-    $cmd = escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -y '
+    $cmd = timeoutPrefix(300) . escapeshellarg(FFMPEG) . ' -hide_banner -loglevel error -nostdin -y -protocol_whitelist file '
         . implode(' ', array_map('escapeshellarg', $args)) . ' 2>&1';
     $output = [];
     $code = 1;
@@ -224,6 +312,14 @@ function processImage($inputPath, $outputPath) {
         $src = applyExifOrientation($src, $inputPath);
     }
 
+    // GIFs (and some PNGs) are palette images, which imagewebp() refuses; make
+    // them true-colour first. Without this every GIF upload failed.
+    if (!imageistruecolor($src)) {
+        imagepalettetotruecolor($src);
+        imagealphablending($src, false);
+        imagesavealpha($src, true);
+    }
+
     $srcWidth = imagesx($src);
     $srcHeight = imagesy($src);
     logMsg("processImage: original size = {$srcWidth}x{$srcHeight}");
@@ -275,9 +371,12 @@ function processImage($inputPath, $outputPath) {
 }
 
 // Converts to MP4 (H.264/AAC) so it plays everywhere, and saves a WebP of the
-// first frame as the thumbnail. If ffmpeg can't convert, keeps the original
-// file. Returns the saved file's extension, or false on failure.
-function processVideo($inputPath, $outputBase, $originalExt, $thumbnailPath) {
+// first frame as the thumbnail. No more than media_max_seconds is kept, even
+// if the file's own header understated its length. Returns 'mp4', or false
+// when ffmpeg can't convert it (the caller rejects the upload; the original
+// is never kept, because once any format is accepted an unconverted original
+// would be a file nobody can play).
+function processVideo($inputPath, $outputBase, $thumbnailPath) {
     global $CONFIG;
     logMsg("processVideo: input=$inputPath output=$outputBase");
 
@@ -293,27 +392,25 @@ function processVideo($inputPath, $outputBase, $originalExt, $thumbnailPath) {
     }
 
     $converted = runFfmpeg([
-        '-i', $inputPath, '-vf', $filters,
+        '-i', 'file:' . $inputPath, '-t', (string)$CONFIG['media_max_seconds'],
+        '-map', '0:v:0', '-map', '0:a:0?', '-vf', $filters,
         '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-pix_fmt', 'yuv420p',
         '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', "$outputBase.mp4",
     ]);
-    if ($converted) {
-        $ext = 'mp4';
-    } else {
+    if (!$converted) {
         @unlink("$outputBase.mp4");
-        if (!copy($inputPath, "$outputBase.$originalExt")) return false;
-        $ext = $originalExt;
+        return false;
     }
 
-    createVideoThumbnail("$outputBase.$ext", $thumbnailPath);
-    logMsg("processVideo SUCCESS: saved $outputBase.$ext");
-    return $ext;
+    createVideoThumbnail("$outputBase.mp4", $thumbnailPath);
+    logMsg("processVideo SUCCESS: saved $outputBase.mp4");
+    return 'mp4';
 }
 
 // ffmpeg grabs the first frame as PNG; GD converts it to WebP.
 function createVideoThumbnail($videoPath, $thumbnailPath) {
     $png = "$thumbnailPath.png";
-    if (!runFfmpeg(['-i', $videoPath, '-frames:v', '1', '-vf', ffmpegScale(640), $png])) return false;
+    if (!runFfmpeg(['-i', 'file:' . $videoPath, '-frames:v', '1', '-vf', ffmpegScale(640), $png])) return false;
     $img = @imagecreatefrompng($png);
     @unlink($png);
     if (!$img) return false;
@@ -322,16 +419,24 @@ function createVideoThumbnail($videoPath, $thumbnailPath) {
     return $ok;
 }
 
-// Converts to MP3. Files that are already MP3 are kept as-is, and if ffmpeg
-// can't convert, the original is kept. Returns the saved extension, or false.
-function processAudio($inputPath, $outputBase, $originalExt) {
+// Converts to MP3, capped at media_max_seconds. A file that already is an MP3
+// is kept as-is. Returns 'mp3', or false when ffmpeg can't convert it.
+function processAudio($inputPath, $outputBase, $alreadyMp3) {
+    global $CONFIG;
     logMsg("processAudio: input=$inputPath output=$outputBase");
 
-    if ($originalExt !== 'mp3') {
-        if (runFfmpeg(['-i', $inputPath, '-vn', '-c:a', 'libmp3lame', '-q:a', '2', "$outputBase.mp3"])) return 'mp3';
-        @unlink("$outputBase.mp3");
-    }
-    return copy($inputPath, "$outputBase.$originalExt") ? $originalExt : false;
+    if ($alreadyMp3) return copy($inputPath, "$outputBase.mp3") ? 'mp3' : false;
+
+    if (runFfmpeg(['-i', 'file:' . $inputPath, '-t', (string)$CONFIG['media_max_seconds'], '-vn', '-c:a', 'libmp3lame', '-q:a', '2', "$outputBase.mp3"])) return 'mp3';
+    @unlink("$outputBase.mp3");
+    return false;
+}
+
+// An image GD can't read (HEIC, AVIF, BMP, TIFF, ...): ffmpeg decodes the
+// first frame to a PNG, which processImage then handles like any other.
+// Returns the PNG's path, or false.
+function convertImageToPng($inputPath, $pngPath) {
+    return runFfmpeg(['-i', 'file:' . $inputPath, '-frames:v', '1', $pngPath]) ? $pngPath : false;
 }
 
 function handle_uploadMedia() {
@@ -365,39 +470,33 @@ function handle_uploadMedia() {
 
     $file = $_FILES['file'];
     $tmpPath = $file['tmp_name'];
-    // Browsers may add codec parameters, e.g. "video/mp4;codecs=avc1".
-    $mimeType = strtolower(trim(explode(';', $file['type'])[0]));
     $fileSize = $file['size'];
     $fileName = $file['name'];
 
-    logMsg("uploadMedia: file=$fileName mime=$mimeType size=$fileSize");
+    logMsg("uploadMedia: file=$fileName claimedMime={$file['type']} size=$fileSize");
 
-    $mediaType = getMediaType($mimeType);
-    if (!$mediaType) {
-        $shownType = $mimeType !== '' ? $mimeType : 'unknown';
-        bad("That file type ($shownType) isn't supported. Allowed: jpg, png, gif, webp, mov, mp4, m4v, wav, mp3", 400);
+    // Cheap size check first, against the biggest limit of any type, so an
+    // enormous upload is turned away before anything reads it.
+    $maxSizes = mediaMaxSizes();
+    if ($fileSize > max($maxSizes)) {
+        $maxMb = round(max($maxSizes) / (1024 * 1024), 1);
+        bad("That file is larger than the biggest allowed ($maxMb MB).", 400);
     }
 
-    $maxSizes = mediaMaxSizes();
+    // What the file really is, from its own bytes. The Content-Type and the
+    // filename the client sent are ignored, so any image, video or audio
+    // format works and a renamed non-media file doesn't.
+    $classified = classifyMedia($tmpPath);
+    if (!$classified) {
+        bad("That doesn't look like an image, video or audio file we can read.", 400);
+    }
+    $mediaType = $classified['type'];
+
     if ($fileSize > $maxSizes[$mediaType]) {
         $maxMb = round($maxSizes[$mediaType] / (1024 * 1024), 1);
         $gotMb = round($fileSize / (1024 * 1024), 1);
         bad("That $mediaType is {$gotMb}MB - the max is {$maxMb}MB.", 400);
     }
-
-    // Real format from the file's own bytes, not the Content-Type the client
-    // claimed. A mismatch (e.g. a renamed text file claiming video/mp4)
-    // means either a bug or a deliberate attempt to get an unsafe file
-    // served from /media/ -- video and audio aren't re-encoded from a
-    // trusted decoder the way images are via GD, and when ffmpeg fails
-    // (always, on a host with no ffmpeg) the original bytes get kept as-is.
-    $sniffed = sniffMedia($tmpPath);
-    $compatible = $sniffed && (
-        ($mediaType === 'image' && $sniffed['family'] === 'image') ||
-        ($mediaType === 'video' && $sniffed['family'] === 'av') ||
-        ($mediaType === 'audio' && in_array($sniffed['family'], ['av', 'audio'], true)) // MediaRecorder audio is WebM/MP4
-    );
-    if (!$compatible) bad("That file doesn't look like a valid $mediaType.", 400);
 
     $timestamp = date('YmdHis');
     $random = bin2hex(random_bytes(8));
@@ -413,7 +512,7 @@ function handle_uploadMedia() {
     // yet, and it sits here while ffprobe/ffmpeg run (up to minutes).
     $stageDir = dirname($CONFIG['db_path']) . '/tmp';
     if (!is_dir($stageDir)) mkdir($stageDir, 0700, true);
-    $tempInput = "{$stageDir}/{$base}.{$sniffed['ext']}";
+    $tempInput = "{$stageDir}/{$base}.{$classified['ext']}";
 
     if (!move_uploaded_file($tmpPath, $tempInput)) {
         logMsg("uploadMedia ERROR: move_uploaded_file failed. tmpPath=$tmpPath, tempInput=$tempInput");
@@ -434,19 +533,24 @@ function handle_uploadMedia() {
         }
     }
 
-    $originalExt = $sniffed['ext'];
     $thumbnailPath = "{$typeDir}/thumb_{$base}.webp";
 
     if ($mediaType === 'image') {
-        $ext = processImage($tempInput, "{$typeDir}/{$base}.webp") ? 'webp' : false;
+        $imageSource = $tempInput;
+        if ($classified['ext'] === 'img') {
+            // A format GD can't read: ffmpeg decodes it to a PNG first.
+            $imageSource = convertImageToPng($tempInput, "{$stageDir}/{$base}.png");
+        }
+        $ext = ($imageSource && processImage($imageSource, "{$typeDir}/{$base}.webp")) ? 'webp' : false;
+        if ($imageSource && $imageSource !== $tempInput) @unlink($imageSource);
     } elseif ($mediaType === 'video') {
-        $ext = processVideo($tempInput, "{$typeDir}/{$base}", $originalExt, $thumbnailPath);
+        $ext = processVideo($tempInput, "{$typeDir}/{$base}", $thumbnailPath);
     } else {
-        $ext = processAudio($tempInput, "{$typeDir}/{$base}", $originalExt);
+        $ext = processAudio($tempInput, "{$typeDir}/{$base}", $classified['ext'] === 'mp3');
     }
 
     @unlink($tempInput);
-    if (!$ext) bad("Couldn't process that $mediaType - it may be corrupted or in an unsupported format.", 500);
+    if (!$ext) bad("Couldn't convert that $mediaType - it may be corrupted or in a format we can't read.", 400);
 
     $filename = "{$base}.{$ext}";
     $pdo = db();
