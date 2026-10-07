@@ -586,6 +586,32 @@ function mediaOutputInfo($path, $type) {
     return $info;
 }
 
+// Registers a file in the staging folder for removal when the request ends,
+// however it ends: success (it was moved away, so nothing to do), bad()
+// (which exits) or a fatal error. Returns the path, for inline use.
+function stageFile($path) {
+    static $files = null;
+    if ($files === null) {
+        $files = [];
+        register_shutdown_function(function () use (&$files) {
+            foreach ($files as $f) if (file_exists($f)) @unlink($f);
+        });
+    }
+    $files[] = $path;
+    return $path;
+}
+
+// rename(), or copy + unlink when the staging folder is on another
+// filesystem (rename can't cross filesystems).
+function moveIntoPlace($from, $to) {
+    if (@rename($from, $to)) return true;
+    if (@copy($from, $to)) {
+        @unlink($from);
+        return true;
+    }
+    return false;
+}
+
 function handle_uploadMedia() {
     global $CONFIG;
 
@@ -662,6 +688,7 @@ function handle_uploadMedia() {
     if (!is_dir($stageDir)) mkdir($stageDir, 0700, true);
     $tempInput = "{$stageDir}/{$base}.{$classified['ext']}";
 
+    stageFile($tempInput);
     if (!move_uploaded_file($tmpPath, $tempInput)) {
         logMsg("uploadMedia ERROR: move_uploaded_file failed. tmpPath=$tmpPath, tempInput=$tempInput");
         bad('Could not save the upload on the server. Please try again.', 500);
@@ -689,38 +716,66 @@ function handle_uploadMedia() {
         bad('The server is busy processing other uploads. Please try again in a moment.', 503);
     }
 
-    $thumbnailPath = "{$typeDir}/thumb_{$base}.webp";
+    // Every output is written to the staging folder first and only moved
+    // into the public media/ folder after the database row exists, so a
+    // half-written or failed conversion is never web-reachable.
+    $stagedThumb = "{$stageDir}/thumb_{$base}.webp";
 
     if ($mediaType === 'image') {
         $imageSource = $tempInput;
         if ($classified['ext'] === 'img') {
             // A format GD can't read: ffmpeg decodes it to a PNG first.
-            $imageSource = convertImageToPng($tempInput, "{$stageDir}/{$base}.png");
+            $imageSource = convertImageToPng($tempInput, stageFile("{$stageDir}/{$base}.png"));
         }
-        $ext = ($imageSource && processImage($imageSource, "{$typeDir}/{$base}.webp")) ? 'webp' : false;
+        $ext = ($imageSource && processImage($imageSource, stageFile("{$stageDir}/{$base}.webp"))) ? 'webp' : false;
         if ($imageSource && $imageSource !== $tempInput) @unlink($imageSource);
     } elseif ($mediaType === 'video') {
-        $ext = processVideo($tempInput, "{$typeDir}/{$base}", $thumbnailPath);
+        stageFile("{$stageDir}/{$base}.mp4");
+        stageFile($stagedThumb);
+        stageFile("$stagedThumb.png");
+        $ext = processVideo($tempInput, "{$stageDir}/{$base}", $stagedThumb);
     } else {
-        $ext = processAudio($tempInput, "{$typeDir}/{$base}");
+        stageFile("{$stageDir}/{$base}.mp3");
+        $ext = processAudio($tempInput, "{$stageDir}/{$base}");
     }
 
     @unlink($tempInput);
     if (!$ext) bad("Couldn't convert that $mediaType - it may be corrupted or in a format we can't read.", 400);
 
     $filename = "{$base}.{$ext}";
-    $pdo = db();
-    $finalFile = "{$typeDir}/{$filename}";
-    $info = mediaOutputInfo($finalFile, $mediaType);
+    $stagedMain = "{$stageDir}/{$filename}";
+    // staged path => final path, main file first.
+    $moves = [$stagedMain => "{$typeDir}/{$filename}"];
+    if ($mediaType === 'video' && file_exists($stagedThumb)) $moves[$stagedThumb] = "{$typeDir}/thumb_{$base}.webp";
+
+    $info = mediaOutputInfo($stagedMain, $mediaType);
     // Everything this upload stores counts toward the user's quota (B3),
     // the video thumbnail included.
-    $bytes = (int)@filesize($finalFile) + ($mediaType === 'video' && file_exists($thumbnailPath) ? (int)filesize($thumbnailPath) : 0);
-    $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
-    $path = "/media/{$uid}/{$mediaType}/{$filename}";
-    $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes]);
-    $mediaId = $pdo->lastInsertId();
+    $bytes = array_sum(array_map(fn($f) => (int)@filesize($f), array_keys($moves)));
 
-    $thumbUrl = ($mediaType === 'video' && file_exists($thumbnailPath)) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
+    $pdo = db();
+    $path = "/media/{$uid}/{$mediaType}/{$filename}";
+    $pdo->beginTransaction();
+    try {
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes]);
+        $mediaId = $pdo->lastInsertId();
+        $moved = [];
+        foreach ($moves as $from => $to) {
+            if (!moveIntoPlace($from, $to)) {
+                foreach ($moved as $done) @unlink($done);
+                throw new RuntimeException("could not move $from to $to");
+            }
+            $moved[] = $to;
+        }
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        logMsg('uploadMedia ERROR: ' . $e->getMessage());
+        bad('Could not save the upload on the server. Please try again.', 500);
+    }
+
+    $thumbUrl = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
 
     logMsg("uploadMedia SUCCESS: mediaId=$mediaId path=$path");
 
