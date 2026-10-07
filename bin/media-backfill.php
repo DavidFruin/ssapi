@@ -1,7 +1,7 @@
 <?php
 // Fills in media columns for rows uploaded before they existed. CLI only.
 //
-//   php ssapi/bin/media-backfill.php --bytes [--dry-run]
+//   php ssapi/bin/media-backfill.php --bytes [--details] [--dry-run]
 //
 // --bytes: media.bytes = the stored file plus its video thumbnail, for every
 // row where it's NULL (B4). Run once right after deploying migration4, before
@@ -9,7 +9,11 @@
 // already over the quota are listed: they keep what they have but can't upload
 // more.
 //
-// Later plan steps (C3) add more modes to this same script.
+// --details (C3): for rows missing them, image width/height and the 960 px
+// feed variant (only for images bigger than that), video width/height/
+// duration and poster (the existing thumb_*.webp, or a new one), audio
+// duration. New files are added to bytes. Needs the GD extension in the
+// CLI PHP, like uploads do in the web PHP.
 if (php_sapi_name() !== 'cli') {
     http_response_code(403);
     exit;
@@ -30,8 +34,8 @@ require __DIR__ . '/../src/Media/handlers.php';
 $args = array_slice($argv, 1);
 $dryRun = in_array('--dry-run', $args, true);
 $modes = array_values(array_filter($args, fn($a) => $a !== '--dry-run'));
-if (!$modes || array_diff($modes, ['--bytes'])) {
-    fwrite(STDERR, "usage: php media-backfill.php --bytes [--dry-run]\n");
+if (!$modes || array_diff($modes, ['--bytes', '--details'])) {
+    fwrite(STDERR, "usage: php media-backfill.php [--bytes] [--details] [--dry-run]\n");
     exit(2);
 }
 
@@ -67,4 +71,65 @@ if (in_array('--bytes', $modes, true)) {
     foreach ($over->fetchAll(PDO::FETCH_ASSOC) as $u) {
         echo "over the quota: user {$u['user_id']} uses " . round($u['used'] / 1048576) . " MB\n";
     }
+}
+
+if (in_array('--details', $modes, true)) {
+    if (!function_exists('imagecreatefromwebp')) {
+        fwrite(STDERR, "--details needs PHP's GD extension in this (CLI) PHP\n");
+        exit(2);
+    }
+    $rows = $pdo->query("SELECT * FROM media WHERE width IS NULL OR duration IS NULL
+        OR (type = 'video' AND poster_path IS NULL) OR (type = 'image' AND variant_path IS NULL)")->fetchAll(PDO::FETCH_ASSOC);
+    $set = $pdo->prepare('UPDATE media SET width = ?, height = ?, duration = ?, variant_path = ?, poster_path = ?, bytes = ? WHERE id = ?');
+    $changed = 0;
+    foreach ($rows as $r) {
+        $file = mediaFilePath($r['path']);
+        if ($file === null || !file_exists($file)) continue;
+        $info = mediaOutputInfo($file, $r['type']);
+        $width = $r['width'] ?? $info['width'];
+        $height = $r['height'] ?? $info['height'];
+        $duration = $r['duration'] ?? $info['duration'];
+        $variant = $r['variant_path'];
+        $poster = $r['poster_path'];
+        $bytes = $r['bytes'];
+        $notes = [];
+
+        if ($r['type'] === 'image' && $variant === null && max((int)$width, (int)$height) > MEDIA_VARIANT_SIDE) {
+            $variantFile = preg_replace('#\.webp$#', '_960.webp', $file);
+            $notes[] = 'variant';
+            if (!$dryRun) {
+                $src = @imagecreatefromwebp($file);
+                if ($src) {
+                    $small = scaledCopy($src, MEDIA_VARIANT_SIDE, true);
+                    if (imagewebp($small, $variantFile, 80)) {
+                        $variant = preg_replace('#\.webp$#', '_960.webp', $r['path']);
+                        if ($bytes !== null) $bytes += filesize($variantFile);
+                    }
+                    imagedestroy($small);
+                    imagedestroy($src);
+                }
+            }
+        }
+        if ($r['type'] === 'video' && $poster === null) {
+            $thumbFile = thumbFileFor($file);
+            $thumbUrl = preg_replace('#/video/([^/]+)\.[^./]+$#', '/video/thumb_$1.webp', $r['path']);
+            if (file_exists($thumbFile)) {
+                $poster = $thumbUrl;
+                $notes[] = 'poster (existing)';
+            } else {
+                $notes[] = 'poster (new)';
+                if (!$dryRun && createVideoThumbnail($file, $thumbFile, (float)$duration)) {
+                    $poster = $thumbUrl;
+                    if ($bytes !== null) $bytes += filesize($thumbFile);
+                }
+            }
+        }
+        if ($r['width'] === null && $width !== null) $notes[] = "{$width}x{$height}";
+        if ($r['duration'] === null && $duration !== null) $notes[] = "{$duration}s";
+        if (!$notes) continue;
+        $changed++;
+        echo ($dryRun ? '[dry run] ' : '') . "media #{$r['id']} ({$r['type']}): " . implode(', ', $notes) . "\n";
+        if (!$dryRun) $set->execute([$width, $height, $duration, $variant, $poster, $bytes, $r['id']]);
+    }
+    echo ($dryRun ? '[dry run] would update' : 'updated') . " $changed row(s).\n";
 }
