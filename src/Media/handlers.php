@@ -902,7 +902,10 @@ function handle_uploadMedia() {
     // yet, and it sits here while ffprobe/ffmpeg run (up to minutes).
     $stageDir = dirname($CONFIG['db_path']) . '/tmp';
     if (!is_dir($stageDir)) mkdir($stageDir, 0700, true);
-    $tempInput = "{$stageDir}/{$base}.{$classified['ext']}";
+    // in_ prefix: the converted output is staged as <base>.webp in the same
+    // folder, and an uploaded WebP must not share its name (deleting the
+    // input afterwards would delete the result).
+    $tempInput = "{$stageDir}/in_{$base}.{$classified['ext']}";
 
     stageFile($tempInput);
     if (!move_uploaded_file($tmpPath, $tempInput)) {
