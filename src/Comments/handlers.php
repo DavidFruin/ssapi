@@ -47,17 +47,19 @@ function handle_getPostComments($pdo, $user) {
     if (!$postId) bad('Missing post ID', 400);
 
     // Comments by users hidden from the viewer (blocked either way, or
-    // frozen), and comments the viewer reported, are left out of both the
-    // page and the total.
+    // frozen) are left out of both the page and the total. Comments the
+    // viewer reported stay, marked reportedByMe.
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'c.user_id');
-    [$rf, $rp] = reportedFilter($pdo, $user['sub'], 'comment', 'c.id');
-    $hf .= $rf;
-    $hp = array_merge($hp, $rp);
     $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ?$hf ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
     $stmt->execute(array_merge([$postId], $hp, [$limit, $offset]));
     $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $mentions = hydrateMentionsBatch($pdo, array_column($comments, 'text'));
-    foreach ($comments as $i => &$comment) $comment['mentions'] = $mentions[$i];
+    $reported = reportedByViewer($pdo, $user['sub'], 'comment');
+    foreach ($comments as $i => &$comment) {
+        $comment['mentions'] = $mentions[$i];
+        $comment['reportedByMe'] = in_array((string)$comment['id'], $reported, true);
+    }
+    unset($comment);
 
     $stmt = $pdo->prepare("SELECT COUNT(*) FROM comments c WHERE c.post_id = ?$hf");
     $stmt->execute(array_merge([$postId], $hp));

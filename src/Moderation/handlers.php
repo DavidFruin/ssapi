@@ -14,9 +14,9 @@
 const REPORT_REASONS = ['spam', 'harassment', 'hate', 'sexual', 'violence', 'self_harm', 'illegal', 'other'];
 
 // Any logged-in user can report a post, a comment or a user. One report per
-// reporter per target (a repeat is accepted silently, no second row). The
-// reported post/comment is hidden from the reporter at once (the visibility
-// filter reads the reports table), and the admin is emailed so the roughly
+// reporter per target; a repeat is refused with "You already reported this".
+// The reported post/comment stays visible to the reporter, marked reportedByMe
+// (the apps label it), and the admin is emailed so the roughly
 // 24-hour response Apple expects can be met. The email never names the
 // reporter.
 function handle_reportContent($pdo, $user) {
@@ -56,6 +56,10 @@ function handle_reportContent($pdo, $user) {
     }
     [$targetUserId, $snapshot] = [(int)$target[0], (string)$target[1]];
     if ($targetUserId === $uid) bad("You can't report yourself", 400);
+
+    $dup = $pdo->prepare('SELECT 1 FROM reports WHERE reporter_id = ? AND target_type = ? AND target_id = ?');
+    $dup->execute([$uid, $type, $targetId]);
+    if ($dup->fetchColumn()) bad('You already reported this', 409);
 
     throttleSend($pdo, "report:$uid", 20, 86400, 'Too many reports today. Try again tomorrow.');
 

@@ -134,6 +134,7 @@ return [
     'Details are too long (max 500 characters)' => 'Los detalles son demasiado largos (máximo 500 caracteres)',
     'Illegal characters in details' => 'Caracteres no permitidos en los detalles',
     "You can't report yourself" => 'No puedes reportarte a ti mismo',
+    'You already reported this' => 'Ya reportaste esto',
     "You can't block yourself" => 'No puedes bloquearte a ti mismo',
     'Too many reports today. Try again tomorrow.' => 'Hiciste demasiados reportes hoy. Inténtalo mañana.',
     'Those terms are out of date. Reload and try again.' => 'Esos términos están desactualizados. Recarga e inténtalo de nuevo.',
