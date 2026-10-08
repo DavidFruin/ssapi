@@ -27,3 +27,18 @@ function tr(string $text, array $params = [], ?string $lang = null): string {
     foreach ($params as $name => $value) $text = str_replace('{' . $name . '}', (string)$value, $text);
     return $text;
 }
+
+// Mail needs the character set declared once a message has accents (Spanish),
+// and a non-ASCII Subject must be encoded. English-only mail is left exactly
+// as it was.
+function mailSubject(string $subject): string {
+    return preg_match('/[^\x20-\x7E]/', $subject) ? '=?UTF-8?B?' . base64_encode($subject) . '?=' : $subject;
+}
+
+function mailHeaders(string $body): string {
+    $headers = "From: no-reply@app.davidfruin.com\r\nReply-To: no-reply@app.davidfruin.com\r\n";
+    if (preg_match('/[^\x20-\x7E\r\n]/', $body)) {
+        $headers .= "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n";
+    }
+    return $headers;
+}

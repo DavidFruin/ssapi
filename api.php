@@ -243,16 +243,19 @@ function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $p
     defer(fn() => pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId));
 }
 
-function notificationText($actorEmail, $type) {
+// $lang is the RECIPIENT's language (users.lang), not the request's: a push
+// goes to another person (language plan L6).
+function notificationText($actorEmail, $type, $lang = 'en') {
+    $p = ['actor' => $actorEmail];
     switch ($type) {
-        case 'like': return "$actorEmail liked your post";
-        case 'unlike': return "$actorEmail unliked your post";
-        case 'comment': return "$actorEmail commented on your post";
-        case 'follow': return "$actorEmail started following you";
-        case 'unfollow': return "$actorEmail unfollowed you";
-        case 'mention': return "$actorEmail mentioned you in a post";
+        case 'like': return tr('{actor} liked your post', $p, $lang);
+        case 'unlike': return tr('{actor} unliked your post', $p, $lang);
+        case 'comment': return tr('{actor} commented on your post', $p, $lang);
+        case 'follow': return tr('{actor} started following you', $p, $lang);
+        case 'unfollow': return tr('{actor} unfollowed you', $p, $lang);
+        case 'mention': return tr('{actor} mentioned you in a post', $p, $lang);
     }
-    return "$actorEmail did something";
+    return tr('{actor} did something', $p, $lang);
 }
 
 function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId) {
@@ -264,7 +267,10 @@ function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $acto
     if (!$subscriptions) return;
 
     $url = $postId ? "/app.html#/post/$postId" : "/app.html#/profile/$actorId";
-    $text = notificationText($actorEmail, $type);
+    $langStmt = $pdo->prepare('SELECT lang FROM users WHERE id = ?');
+    $langStmt->execute([$recipientId]);
+    $recipientLang = $langStmt->fetchColumn();
+    $text = notificationText($actorEmail, $type, in_array($recipientLang, SUPPORTED_LANGS, true) ? $recipientLang : 'en');
     $count = getUnseenNotificationCount($pdo, $recipientId);
 
     // The phone app's tokens go through Expo's push service. This branches on

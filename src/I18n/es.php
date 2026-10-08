@@ -145,4 +145,20 @@ return [
     'A user report has no content to delete. Freeze the user instead.' => 'Un reporte de usuario no tiene contenido que eliminar. Suspende al usuario.',
     'That account no longer exists' => 'Esa cuenta ya no existe',
     "You can't freeze your own account" => 'No puedes suspender tu propia cuenta',
+
+    // --- emails (one-time codes; the request's language) ---
+    'Your Simple Social Password Reset OTP' => 'Tu código de Simple Social para restablecer la contraseña',
+    'Your Simple Social Registration OTP' => 'Tu código de registro de Simple Social',
+    'Your 6-digit OTP code is: {otp}' => 'Tu código de 6 dígitos es: {otp}',
+    'Valid for 10 minutes.' => 'Es válido por 10 minutos.',
+    'If you did not request this, ignore this email.' => 'Si no lo pediste, ignora este correo.',
+
+    // --- push notifications (the recipient's language) ---
+    '{actor} liked your post' => 'A {actor} le gustó tu publicación',
+    '{actor} unliked your post' => 'A {actor} ya no le gusta tu publicación',
+    '{actor} commented on your post' => '{actor} comentó en tu publicación',
+    '{actor} started following you' => '{actor} empezó a seguirte',
+    '{actor} unfollowed you' => '{actor} dejó de seguirte',
+    '{actor} mentioned you in a post' => '{actor} te mencionó en una publicación',
+    '{actor} did something' => '{actor} hizo algo',
 ];

@@ -266,11 +266,11 @@ function handle_sendOTP($pdo) {
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
     $stmt->execute([$otp, time() + 600, $row['id']]);
 
-    $subject = 'Your Simple Social Password Reset OTP';
-    $message = "Your 6-digit OTP code is: $otp\n\nValid for 10 minutes.\n\nIf you did not request this, ignore this email.";
-    $headers = "From: no-reply@app.davidfruin.com\r\nReply-To: no-reply@app.davidfruin.com\r\n";
+    $subject = tr('Your Simple Social Password Reset OTP');
+    $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
+    $headers = mailHeaders($message);
 
-    mail($row['email'], $subject, $message, $headers)
+    mail($row['email'], mailSubject($subject), $message, $headers)
         ? respond(good(['message' => 'OTP sent to your email. Check inbox/spam.']))
         : bad('Failed to send email. Try again or contact support.', 500);
 }
@@ -353,11 +353,11 @@ function handle_sendRegisterOTP($pdo) {
     $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated) VALUES (?, ?, ?, ?)');
     $stmt->execute([$email, '', $otp, time()]);
 
-    $subject = 'Your Simple Social Registration OTP';
-    $message = "Your 6-digit OTP code is: $otp\n\nValid for 10 minutes.\n\nIf you did not request this, ignore this email.";
-    $headers = "From: no-reply@app.davidfruin.com\r\nReply-To: no-reply@app.davidfruin.com\r\n";
+    $subject = tr('Your Simple Social Registration OTP');
+    $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
+    $headers = mailHeaders($message);
 
-    mail($email, $subject, $message, $headers)
+    mail($email, mailSubject($subject), $message, $headers)
         ? respond(good(['message' => 'OTP sent to your email. Check inbox/spam.']))
         : bad('Failed to send email.', 500);
 }
