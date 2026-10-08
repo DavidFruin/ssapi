@@ -413,8 +413,8 @@ function handle_finishRegister($pdo) {
         // Standard single-quoted SQL string literals, not SQLite's legacy
         // double-quoted-identifier-as-string fallback -- a build compiled
         // without that fallback would reject this INSERT outright.
-        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at, lang)
-            VALUES (?, ?, '[]', '[]', '[]', '', ?, ?)")->execute([$email, $hashed, $created_at, explicitRequestLang()]);
+        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at)
+            VALUES (?, ?, '[]', '[]', '[]', '', ?)")->execute([$email, $hashed, $created_at]);
         $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
