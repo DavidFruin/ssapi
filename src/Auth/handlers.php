@@ -332,6 +332,14 @@ function handle_sendRegisterOTP($pdo) {
     $email = trim($_POST['email'] ?? '');
     if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) bad('Valid email required', 400);
 
+    // Invite-only: the code is checked first, before the send throttles and
+    // before any email. It is only read here; nothing is spent until the
+    // account is created (handle_finishRegister).
+    $inviteCode = null;
+    if (registrationNeedsInvite()) {
+        $inviteCode = requireValidInvite($pdo, (string)($_POST['inviteCode'] ?? ''))['code'];
+    }
+
     $k = attemptKeys('otpsend', $email);
     throttleSend($pdo, $k['email'], 3);   // 3 codes per address per 15 min
     throttleSend($pdo, $k['ip'], 10);     // 10 per IP per 15 min
@@ -350,8 +358,8 @@ function handle_sendRegisterOTP($pdo) {
     $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('DELETE FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
-    $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated) VALUES (?, ?, ?, ?)');
-    $stmt->execute([$email, '', $otp, time()]);
+    $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated, invite_code) VALUES (?, ?, ?, ?, ?)');
+    $stmt->execute([$email, '', $otp, time(), $inviteCode]);
 
     $subject = tr('Your Simple Social Registration OTP');
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
@@ -396,7 +404,7 @@ function handle_finishRegister($pdo) {
     if (!$email || !$password || $password !== $confirm) bad('Passwords do not match or are empty', 400);
     validatePasswordRules($password);
 
-    $stmt = $pdo->prepare('SELECT otp, dateCreated FROM pending_users WHERE email = ?');
+    $stmt = $pdo->prepare('SELECT otp, dateCreated, invite_code FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !$row['otp'] || time() - $row['dateCreated'] > 600) bad('Session expired. Please start over.', 400);
@@ -410,11 +418,32 @@ function handle_finishRegister($pdo) {
         $s = $pdo->prepare('SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)');
         $s->execute([$email]);
         if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('Email already registered', 400); }
+
+        // The invite is spent here and only here, in the same transaction as
+        // the new account, so two people finishing with one code can't both
+        // get in (BEGIN IMMEDIATE makes the check-then-delete atomic), and an
+        // abandoned registration leaves the code live.
+        $inviterId = null;
+        if (registrationNeedsInvite()) {
+            $s = $pdo->prepare('SELECT i.created_by FROM invite_codes i
+                JOIN users u ON u.id = i.created_by AND u.frozen_at IS NULL
+                WHERE i.code = ? AND i.expires_at > ?');
+            $s->execute([(string)($row['invite_code'] ?? ''), date('Y-m-d H:i:s')]);
+            $inviterId = $s->fetchColumn();
+            if ($inviterId === false) {
+                $pdo->exec('ROLLBACK');
+                bad('That invite code has expired or was already used. Ask for a new one.', 400);
+            }
+            $inviterId = (int)$inviterId;
+            $pdo->prepare('DELETE FROM invite_codes WHERE code = ?')->execute([$row['invite_code']]);
+            $pdo->prepare('UPDATE users SET invite_used_at = ? WHERE id = ? AND role != ?')
+                ->execute([date('Y-m-d H:i:s'), $inviterId, 'owner']);
+        }
         // Standard single-quoted SQL string literals, not SQLite's legacy
         // double-quoted-identifier-as-string fallback -- a build compiled
         // without that fallback would reject this INSERT outright.
-        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at)
-            VALUES (?, ?, '[]', '[]', '[]', '', ?)")->execute([$email, $hashed, $created_at]);
+        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending)
+            VALUES (?, ?, '[]', '[]', '[]', '', ?, ?, ?)")->execute([$email, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0]);
         $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {

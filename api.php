@@ -38,6 +38,9 @@ function logRequest($action, $params = [], $isPublic = false) {
     if (isset($safeParams['password'])) $safeParams['password'] = '***';
     if (isset($safeParams['confirm'])) $safeParams['confirm'] = '***';
     if (isset($safeParams['otp'])) $safeParams['otp'] = '***';
+    // An invite code is a credential until it is used or expires.
+    if (isset($safeParams['inviteCode'])) $safeParams['inviteCode'] = '***';
+    if ($action === 'cancelInviteCode' && isset($safeParams['code'])) $safeParams['code'] = '***';
     if (isset($safeParams['reset_otp'])) $safeParams['reset_otp'] = '***';
     // A refresh token is a 30-day credential for the whole account, so it
     // must never reach the log - more sensitive than the access token, not
@@ -540,7 +543,7 @@ function handle_deleteAccount($pdo, $user) {
 }
 
 // ============== DISPATCHER ==============
-$PUBLIC_ENDPOINTS = ['login', 'logout', 'refreshToken', 'sendOTP', 'verifyOTP', 'resetPassword', 'sendRegisterOTP', 'verifyRegisterOTP', 'finishRegister'];
+$PUBLIC_ENDPOINTS = ['login', 'logout', 'refreshToken', 'sendOTP', 'verifyOTP', 'resetPassword', 'sendRegisterOTP', 'verifyRegisterOTP', 'finishRegister', 'checkInviteCode'];
 
 $HANDLERS = [
     'login' => 'handle_login', 'logout' => 'handle_logout', 'refreshToken' => 'handle_refreshToken',
@@ -561,6 +564,7 @@ $HANDLERS = [
     'deleteComment' => 'handle_deleteComment', 'getPostCommentCounts' => 'handle_getPostCommentCounts',
     'markNotificationsSeen' => 'handle_markNotificationsSeen', 'getPostById' => 'handle_getPostById',
     'getPostPreviews' => 'handle_getPostPreviews',
+    'checkInviteCode' => 'handle_checkInviteCode', 'dismissWelcome' => 'handle_dismissWelcome',
     'getMyInvites' => 'handle_getMyInvites', 'generateInviteCode' => 'handle_generateInviteCode', 'cancelInviteCode' => 'handle_cancelInviteCode',
     'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand', 'updateLanguage' => 'handle_updateLanguage',
     'getMediaLimits' => 'handle_getMediaLimits',

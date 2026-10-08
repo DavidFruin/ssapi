@@ -56,7 +56,11 @@ function handle_getMyInfo($pdo, $user) {
         'isAdmin' => (int)($row['is_admin'] ?? 0) === 1,
         'termsVersionAccepted' => (int)($row['terms_version_accepted'] ?? 0),
         'termsVersionCurrent' => $CONFIG['terms_version'],
-        'termsUrl' => $CONFIG['terms_url']]));
+        'termsUrl' => $CONFIG['terms_url'],
+        // Additive. 'welcome' is only present until the new member dismisses
+        // it, and is the one place their inviter's email is shown to them.
+        'registrationMode' => registrationNeedsInvite() ? 'invite' : 'open']
+        + (($welcome = welcomeFor($pdo, (int)$user['sub'])) !== null ? ['welcome' => $welcome] : [])));
 }
 
 function handle_updateTheme($pdo, $user) {

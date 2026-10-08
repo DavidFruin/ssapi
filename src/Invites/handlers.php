@@ -101,3 +101,51 @@ function handle_cancelInviteCode($pdo, $user) {
     if ($del->rowCount() === 0) bad("That invite code isn't valid.", 400);
     respond(good(['cancelled' => true]));
 }
+
+function registrationNeedsInvite(): bool {
+    return strtolower(getenv('REGISTRATION_MODE') ?: 'invite') !== 'open';
+}
+
+// The live code's row (with the inviter's email), or exits with the one
+// generic message. Rate-limited per IP: every wrong guess counts, and the
+// message never says whether the code was wrong, expired or used. Codes made
+// by a frozen or deleted account don't count (the JOIN finds no inviter).
+// Codes are case-sensitive, so the lookup trims whitespace and nothing else.
+function requireValidInvite($pdo, string $raw): array {
+    $keys = ['ip' => attemptKeys('invite', '-')['ip']];
+    checkAttemptLimit($pdo, $keys);
+    deleteExpiredInvites($pdo);
+    $s = $pdo->prepare('SELECT i.code, i.created_by, i.expires_at, u.email AS inviter_email, u.role AS inviter_role
+        FROM invite_codes i JOIN users u ON u.id = i.created_by AND u.frozen_at IS NULL WHERE i.code = ?');
+    $s->execute([trim($raw)]);
+    $row = $s->fetch(PDO::FETCH_ASSOC);
+    if (!$row) {
+        recordFailedAttempt($pdo, $keys);
+        bad("That invite code isn't valid.", 400);
+    }
+    return $row;
+}
+
+// Public: the Register page's first step. Only a valid code reveals who made
+// it, and whoever holds one was given it by that person.
+function handle_checkInviteCode($pdo) {
+    $row = requireValidInvite($pdo, (string)($_POST['inviteCode'] ?? ''));
+    respond(good(['expiresAt' => $row['expires_at'], 'inviterEmail' => $row['inviter_email']]));
+}
+
+// The one-time welcome for a member who joined with an invite, or null. The
+// inviter's account may be gone by now (inviterEmail then null: the apps show
+// a plain welcome). Shown only to the new member, in their own getMyInfo.
+function welcomeFor($pdo, int $userId): ?array {
+    $s = $pdo->prepare('SELECT u.welcome_pending, i.email AS inviter_email, i.role AS inviter_role
+        FROM users u LEFT JOIN users i ON i.id = u.invited_by WHERE u.id = ?');
+    $s->execute([$userId]);
+    $row = $s->fetch(PDO::FETCH_ASSOC);
+    if (!$row || (int)$row['welcome_pending'] !== 1) return null;
+    return ['inviterEmail' => $row['inviter_email'], 'inviterIsOwner' => ($row['inviter_role'] ?? '') === 'owner'];
+}
+
+function handle_dismissWelcome($pdo, $user) {
+    $pdo->prepare('UPDATE users SET welcome_pending = 0 WHERE id = ?')->execute([(int)$user['sub']]);
+    respond(good());
+}

@@ -71,6 +71,7 @@ return [
     "You've already used your invite." => 'Ya usaste tu invitación.',
     'You already have an active code. Cancel it to make a new one.' => 'Ya tienes un código activo. Cancélalo para crear uno nuevo.',
     "That invite code isn't valid." => 'Ese código de invitación no es válido.',
+    'That invite code has expired or was already used. Ask for a new one.' => 'Ese código de invitación expiró o ya se usó. Pide uno nuevo.',
 
     // --- Users ---
     'Invalid theme' => 'Tema no válido',
