@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -76,11 +76,46 @@ function ensureSchema($pdo) {
         if ($v < 3) migration3($pdo);
         if ($v < 4) migration4($pdo);
         if ($v < 5) migration5($pdo);
+        if ($v < 6) migration6($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
+    }
+}
+
+// Invites (access plan Step 1): each member can invite one person with a
+// short-lived code, the owner as many as they like. invite_codes holds only
+// live codes (used and expired ones are deleted). users.invited_by records
+// who invited whom and is NEVER returned by any API; users.role is 'owner'
+// for Dave (set by hand, see the plan's rollout); invite_used_at marks a
+// member whose one invite has been spent; welcome_pending is 1 from
+// registration until the new member dismisses their one-time welcome.
+// pending_users.invite_code remembers the code a half-finished registration
+// started with, which is only spent when the account is created. Every
+// column is guarded, so re-running this is harmless.
+function migration6($pdo) {
+    $pdo->exec('CREATE TABLE IF NOT EXISTS invite_codes (
+        code TEXT PRIMARY KEY,
+        created_by INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_invite_codes_created_by ON invite_codes(created_by)');
+    $add = [
+        'users' => [
+            'role' => "TEXT NOT NULL DEFAULT 'user'",
+            'invited_by' => 'INTEGER',
+            'invite_used_at' => 'TEXT',
+            'welcome_pending' => 'INTEGER NOT NULL DEFAULT 0',
+        ],
+        'pending_users' => ['invite_code' => 'TEXT'],
+    ];
+    foreach ($add as $table => $columns) {
+        $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+        foreach ($columns as $col => $type) {
+            if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
+        }
     }
 }
 
