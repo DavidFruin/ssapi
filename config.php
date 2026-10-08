@@ -109,6 +109,10 @@ $CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BO
 $CONFIG['db_path'] = $privateDir . '/userdata.db';
 $CONFIG['log_dir'] = $privateDir . '/logs';
 
+// Word filter list (Step 1C.2): one word or phrase per line, edited by hand on
+// the server. It is never in a repo. A missing or empty file means no filtering.
+$CONFIG['blocked_words_file'] = $privateDir . '/blocked-words.txt';
+
 // Uploaded media lives in the web root (public_html/media), next to -- not inside -- this code.
 // Default fits the split layout (domain/ssapi + domain/public_html); MEDIA_DIR in private/.env
 // overrides it, e.g. for the old layout where the code sits in public_html itself.

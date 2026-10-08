@@ -94,6 +94,8 @@ return [
     'Missing post ID' => 'Falta el id de la publicación',
     'Comment text required' => 'Se necesita el texto del comentario',
     'Comment too long (max 5000 chars)' => 'El comentario es demasiado largo (máximo 5000 caracteres)',
+    "Your post contains a word that isn't allowed." => 'Tu publicación contiene una palabra que no está permitida.',
+    "Your comment contains a word that isn't allowed." => 'Tu comentario contiene una palabra que no está permitida.',
     'Illegal characters in comment' => 'Caracteres no permitidos en el comentario',
     'Missing comment ID' => 'Falta el id del comentario',
     'Comment not found' => 'No se encontró el comentario',

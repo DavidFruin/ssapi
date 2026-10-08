@@ -18,6 +18,7 @@ function handle_createComment($pdo, $user) {
     if (!$text) bad('Comment text required', 400);
     if (strlen($text) > 5000) bad('Comment too long (max 5000 chars)', 400);
     validateContent($text, 'Illegal characters in comment');
+    if (containsBlockedWord($text)) bad("Your comment contains a word that isn't allowed.", 400);
     $mentionIds = extractMentions($text);
 
     $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');

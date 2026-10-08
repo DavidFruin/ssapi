@@ -11,6 +11,35 @@
 // respond(), hiddenUserIds()/isHiddenFrom() (the visibility filter every
 // listing handler applies), defer().
 
+// Word filter (access-and-public-launch plan, Step 1C.2). Built once per
+// request from private/blocked-words.txt. Null when the file is missing or
+// empty: no filtering, and posting never breaks over the file. Lines are
+// literal (no regex syntax); a run of spaces inside a phrase matches any
+// whitespace run; a listed word does not match inside a longer word.
+function blockedWordsRegex(): ?string {
+    global $CONFIG;
+    static $cache = null;
+    if ($cache === null) {
+        $file = $CONFIG['blocked_words_file'] ?? '';
+        $lines = ($file !== '' && is_readable($file)) ? (file($file, FILE_IGNORE_NEW_LINES) ?: []) : [];
+        $parts = [];
+        foreach ($lines as $line) {
+            $word = trim(preg_replace('/^\xEF\xBB\xBF/', '', $line));
+            if ($word === '') continue;
+            $pieces = preg_split('/\s+/u', $word, -1, PREG_SPLIT_NO_EMPTY);
+            if (!$pieces) continue;
+            $parts[] = implode('\s+', array_map(fn($p) => preg_quote($p, '/'), $pieces));
+        }
+        $cache = $parts ? '/(?<![\p{L}\p{N}])(?:' . implode('|', $parts) . ')(?![\p{L}\p{N}])/iu' : '';
+    }
+    return $cache === '' ? null : $cache;
+}
+
+function containsBlockedWord(string $text): bool {
+    $re = blockedWordsRegex();
+    return $re !== null && preg_match($re, $text) === 1;
+}
+
 const REPORT_REASONS = ['spam', 'harassment', 'hate', 'sexual', 'violence', 'self_harm', 'illegal', 'other'];
 
 // Any logged-in user can report a post, a comment or a user. One report per

@@ -193,6 +193,8 @@ function handle_post($pdo, $user) {
     if (!$text) bad('Post text required', 400);
     if (strlen($text) > 5000) bad('You are trying to make a post that is longer than 5K characters', 400);
     validateContent($text, 'You are trying to post illegal characters');
+    // The message never repeats the word, which keeps the list private.
+    if (containsBlockedWord($text)) bad("Your post contains a word that isn't allowed.", 400);
     $mentionIds = extractMentions($text);
 
     $uid = $user['sub'];
