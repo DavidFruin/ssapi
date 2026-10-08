@@ -46,7 +46,14 @@ function handle_reportContent($pdo, $user) {
         $targetId = (string)(int)$targetId;
     }
     $target = $s->fetch(PDO::FETCH_NUM);
-    if (!$target) bad(ucfirst($type) . ' not found', 404);
+    if (!$target) {
+        $notFound = match ($type) {
+            'post' => tr('Post not found'),
+            'comment' => tr('Comment not found'),
+            default => tr('User not found'),
+        };
+        bad($notFound, 404);
+    }
     [$targetUserId, $snapshot] = [(int)$target[0], (string)$target[1]];
     if ($targetUserId === $uid) bad("You can't report yourself", 400);
 

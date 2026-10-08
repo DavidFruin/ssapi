@@ -95,7 +95,7 @@ function formatStorageLimit($bytes) {
 function rejectOverQuota() {
     global $CONFIG;
     $limit = formatStorageLimit($CONFIG['media_max_user_bytes']);
-    bad("You have reached your media storage limit of $limit of media.", 413, ['code' => 'media_quota']);
+    bad(tr('You have reached your media storage limit of {limit} of media.', ['limit' => $limit]), 413, ['code' => 'media_quota']);
 }
 
 // Every file a media row owns: the file itself, a video's thumbnail, and the
@@ -278,7 +278,7 @@ function oversizedFrame($width, $height, $what) {
     if ($width * $height <= $CONFIG['media_max_pixels'] && max($width, $height) <= $CONFIG['media_max_dimension']) return null;
     logMsg("classifyMedia: refused {$width}x{$height} $what (over the pixel limits)");
     $mp = round($CONFIG['media_max_pixels'] / 1_000_000);
-    return "That $what is too large (max about $mp megapixels).";
+    return tr('That {type} is too large (max about {mp} megapixels).', ['type' => tr($what), 'mp' => $mp]);
 }
 
 // The first refusal for any video stream in a probe that's over the pixel
@@ -861,7 +861,7 @@ function handle_uploadMedia() {
     $maxSizes = mediaMaxSizes();
     if ($fileSize > max($maxSizes)) {
         $maxMb = round(max($maxSizes) / (1024 * 1024), 1);
-        bad("That file is larger than the biggest allowed ($maxMb MB).", 400);
+        bad(tr('That file is larger than the biggest allowed ({max} MB).', ['max' => $maxMb]), 400);
     }
 
     // Video and audio need ffmpeg. Without it, say so plainly rather than
@@ -885,7 +885,7 @@ function handle_uploadMedia() {
     if ($fileSize > $maxSizes[$mediaType]) {
         $maxMb = round($maxSizes[$mediaType] / (1024 * 1024), 1);
         $gotMb = round($fileSize / (1024 * 1024), 1);
-        bad("That $mediaType is {$gotMb}MB - the max is {$maxMb}MB.", 400);
+        bad(tr('That {type} is {got}MB - the max is {max}MB.', ['type' => tr($mediaType), 'got' => $gotMb, 'max' => $maxMb]), 400);
     }
 
     $timestamp = date('YmdHis');
@@ -924,7 +924,7 @@ function handle_uploadMedia() {
         $maxSeconds = $CONFIG['media_max_seconds'];
         if ($duration > $maxSeconds) {
             @unlink($tempInput);
-            bad("That $mediaType is " . round($duration, 1) . " seconds long. Max: $maxSeconds seconds", 400);
+            bad(tr('That {type} is {seconds} seconds long. Max: {max} seconds', ['type' => tr($mediaType), 'seconds' => round($duration, 1), 'max' => $maxSeconds]), 400);
         }
     }
 
@@ -962,7 +962,7 @@ function handle_uploadMedia() {
     }
 
     @unlink($tempInput);
-    if (!$ext) bad("Couldn't convert that $mediaType - it may be corrupted or in a format we can't read.", 400);
+    if (!$ext) bad(tr("Couldn't convert that {type} - it may be corrupted or in a format we can't read.", ['type' => tr($mediaType)]), 400);
 
     $filename = "{$base}.{$ext}";
     $stagedMain = "{$stageDir}/{$filename}";

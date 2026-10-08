@@ -42,7 +42,9 @@ function checkAttemptLimit($pdo, $keys) {
         $lockedUntil = (int)$stmt->fetchColumn();
         if ($lockedUntil <= time()) continue;
         $minutes = (int)ceil(($lockedUntil - time()) / 60);
-        bad("Too many attempts. Try again in $minutes minute" . ($minutes === 1 ? '' : 's') . '.', 429);
+        bad($minutes === 1
+            ? tr('Too many attempts. Try again in {minutes} minute.', ['minutes' => $minutes])
+            : tr('Too many attempts. Try again in {minutes} minutes.', ['minutes' => $minutes]), 429);
     }
 }
 
@@ -123,7 +125,9 @@ function handle_login($pdo) {
     // emails have accounts.
     if ($user['frozen_at'] !== null) {
         $contact = $CONFIG['contact_email'] ?? '';
-        bad('This account has been suspended. ' . ($contact !== '' ? "Contact $contact" : 'Contact the site admin') . ' if you think this is a mistake.', 403);
+        bad($contact !== ''
+            ? tr('This account has been suspended. Contact {contact} if you think this is a mistake.', ['contact' => $contact])
+            : tr('This account has been suspended. Contact the site admin if you think this is a mistake.'), 403);
     }
 
     // A new login adds a session; it never disturbs the ones already there,

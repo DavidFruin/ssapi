@@ -32,6 +32,10 @@ function respond($data, $code = 200) {
     // (which can include a fresh mediaUrl) shouldn't be cached either.
     header('X-Content-Type-Options: nosniff');
     header('Cache-Control: no-store');
+    // Language plan L5: translated here, after the caller logged the English.
+    foreach (['message', 'error'] as $field) {
+        if (isset($data[$field]) && is_string($data[$field])) $data[$field] = tr($data[$field]);
+    }
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }

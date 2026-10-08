@@ -80,6 +80,11 @@ function respond($data, $code = 200) {
     $success = ($code >= 200 && $code < 400) || ($data['valid'] ?? false);
     $message = $data['message'] ?? ($data['error'] ?? '');
     logResponse($action ?? 'unknown', $success, $message);
+    // Language plan L5: the English sentence is the key. Only when the app
+    // asked for Spanish (X-SS-Lang); everyone else gets the English as-is.
+    foreach (['message', 'error'] as $field) {
+        if (isset($data[$field]) && is_string($data[$field])) $data[$field] = tr($data[$field]);
+    }
     $body = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     ob_clean();
     http_response_code($code);
@@ -155,7 +160,7 @@ function jsonIdList($key, $max = 100, $ints = false) {
     $list = json_decode($_POST[$key] ?? '[]', true);
     if (!is_array($list)) return [];
     $list = array_values(array_unique(array_filter($list, 'is_scalar')));
-    if (count($list) > $max) bad("Too many ids (max $max)", 400);
+    if (count($list) > $max) bad(tr('Too many ids (max {max})', ['max' => $max]), 400);
     if ($ints) return array_values(array_filter(array_map('intval', $list), fn($i) => $i > 0));
     return array_map('strval', $list);
 }
@@ -359,7 +364,7 @@ function extractMentions($text) {
     preg_match_all('/@\[(\d+)\]/', $text, $matches);
     $ids = array_values(array_unique(array_map('intval', $matches[1])));
     if (count($ids) > $CONFIG['max_mentions']) {
-        bad('Too many people tagged. Max: ' . $CONFIG['max_mentions'], 400);
+        bad(tr('Too many people tagged. Max: {max}', ['max' => $CONFIG['max_mentions']]), 400);
     }
     return $ids;
 }
