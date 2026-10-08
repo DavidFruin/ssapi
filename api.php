@@ -553,7 +553,7 @@ $HANDLERS = [
     'deleteComment' => 'handle_deleteComment', 'getPostCommentCounts' => 'handle_getPostCommentCounts',
     'markNotificationsSeen' => 'handle_markNotificationsSeen', 'getPostById' => 'handle_getPostById',
     'getPostPreviews' => 'handle_getPostPreviews',
-    'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand',
+    'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand', 'updateLanguage' => 'handle_updateLanguage',
     'getMediaLimits' => 'handle_getMediaLimits',
     'getVapidPublicKey' => 'handle_getVapidPublicKey',
     'savePushSubscription' => 'handle_savePushSubscription',

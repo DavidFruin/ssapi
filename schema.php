@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -75,12 +75,21 @@ function ensureSchema($pdo) {
         if ($v < 2) migration2($pdo);
         if ($v < 3) migration3($pdo);
         if ($v < 4) migration4($pdo);
+        if ($v < 5) migration5($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Language (language plan 2.1): the language each user picked, 'en' or 'es'.
+// NULL means they never chose; push notifications then use English until the
+// app sends its current language up. Guarded, so re-running is harmless.
+function migration5($pdo) {
+    $have = array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!in_array('lang', $have, true)) $pdo->exec('ALTER TABLE users ADD COLUMN lang TEXT');
 }
 
 // Media details (media pipeline plan B4): stored size and length, total

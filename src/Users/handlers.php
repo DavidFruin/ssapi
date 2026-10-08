@@ -48,10 +48,11 @@ function handle_getUserEmails($pdo, $user) {
 
 function handle_getMyInfo($pdo, $user) {
     global $CONFIG;
-    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, is_admin, terms_version_accepted FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, is_admin, terms_version_accepted, lang FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right',
+        'lang' => $row['lang'] ?? null,
         'isAdmin' => (int)($row['is_admin'] ?? 0) === 1,
         'termsVersionAccepted' => (int)($row['terms_version_accepted'] ?? 0),
         'termsVersionCurrent' => $CONFIG['terms_version'],
@@ -66,6 +67,15 @@ function handle_updateTheme($pdo, $user) {
     $stmt = $pdo->prepare('UPDATE users SET theme = ? WHERE id = ?');
     $stmt->execute([$theme, $user['sub']]);
     respond(good(['message' => 'Theme updated']));
+}
+
+function handle_updateLanguage($pdo, $user) {
+    $lang = $_POST['lang'] ?? '';
+    if (!in_array($lang, SUPPORTED_LANGS, true)) bad('Invalid language', 400);
+
+    $stmt = $pdo->prepare('UPDATE users SET lang = ? WHERE id = ?');
+    $stmt->execute([$lang, $user['sub']]);
+    respond(good(['message' => 'Language updated']));
 }
 
 function handle_updateHand($pdo, $user) {

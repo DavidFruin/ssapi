@@ -11,6 +11,7 @@
             "App\\": "src/"
         },
         "files": [
+            "src/I18n/i18n.php",
             "src/Auth/handlers.php",
             "src/Users/handlers.php",
             "src/Posts/handlers.php",
