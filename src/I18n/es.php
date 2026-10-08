@@ -67,6 +67,11 @@ return [
     'Account created successfully!' => '¡Cuenta creada correctamente!',
     'User not found' => 'No se encontró al usuario',
 
+    // --- Invites ---
+    "You've already used your invite." => 'Ya usaste tu invitación.',
+    'You already have an active code. Cancel it to make a new one.' => 'Ya tienes un código activo. Cancélalo para crear uno nuevo.',
+    "That invite code isn't valid." => 'Ese código de invitación no es válido.',
+
     // --- Users ---
     'Invalid theme' => 'Tema no válido',
     'Invalid hand' => 'Mano no válida',

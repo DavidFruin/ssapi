@@ -19,7 +19,8 @@
             "src/Follows/handlers.php",
             "src/Notifications/handlers.php",
             "src/Media/handlers.php",
-            "src/Moderation/handlers.php"
+            "src/Moderation/handlers.php",
+            "src/Invites/handlers.php"
         ]
     }
 }

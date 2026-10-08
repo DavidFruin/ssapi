@@ -504,6 +504,10 @@ function handle_deleteAccount($pdo, $user) {
         // reports *about* them stay (with the snapshot) as the moderation
         // record, no longer pointing at an account.
         $pdo->prepare('DELETE FROM blocks WHERE blocker_id = ? OR blocked_id = ?')->execute([$uid, $uid]);
+        // Their unused invite codes go too. Anyone they invited keeps their
+        // invited_by (the id just points at nothing); the inviter's own
+        // spent invite stays spent.
+        $pdo->prepare('DELETE FROM invite_codes WHERE created_by = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM reports WHERE reporter_id = ?')->execute([$uid]);
         $pdo->prepare('UPDATE reports SET target_user_id = NULL WHERE target_user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
@@ -557,6 +561,7 @@ $HANDLERS = [
     'deleteComment' => 'handle_deleteComment', 'getPostCommentCounts' => 'handle_getPostCommentCounts',
     'markNotificationsSeen' => 'handle_markNotificationsSeen', 'getPostById' => 'handle_getPostById',
     'getPostPreviews' => 'handle_getPostPreviews',
+    'getMyInvites' => 'handle_getMyInvites', 'generateInviteCode' => 'handle_generateInviteCode', 'cancelInviteCode' => 'handle_cancelInviteCode',
     'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand', 'updateLanguage' => 'handle_updateLanguage',
     'getMediaLimits' => 'handle_getMediaLimits',
     'getVapidPublicKey' => 'handle_getVapidPublicKey',
