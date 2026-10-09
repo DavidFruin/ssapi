@@ -368,3 +368,110 @@ function handle_adminUnfreezeUser($pdo, $user) {
     writeLog('WARN', 'api', "moderation: {$me['role']} {$user['sub']} unfroze user $targetId");
     respond(good(['frozen' => false]));
 }
+
+// ---- The Frozen tab ----
+
+// Roles strictly below $me's, as a quoted SQL list (fixed names, never input).
+function rolesBelowSql(array $me): string {
+    $below = array_keys(array_filter(ROLE_RANK, fn($r) => $r < ROLE_RANK[$me['role']]));
+    return "'" . implode("','", $below) . "'";
+}
+
+// Frozen accounts, posts and comments the caller outranks, newest first.
+// {type, id, userId, email, text, mediaUrl, frozenAt, frozenByEmail}; an
+// account has no text, media or frozen-by (users.frozen_at is all there is).
+function handle_adminListFrozen($pdo, $user) {
+    $me = requireRole($pdo, $user, 'moderator');
+    [$limit, $offset] = pageParams();
+    $below = rolesBelowSql($me);
+    $union = "SELECT 'user' AS type, CAST(u.id AS TEXT) AS id, u.id AS user_id, u.email AS email, NULL AS text, NULL AS media_url,
+            u.frozen_at AS frozen_at, NULL AS frozen_by_email
+        FROM users u WHERE u.frozen_at IS NOT NULL AND u.role IN ($below)
+      UNION ALL
+        SELECT 'post', p.id, p.user_id, u.email, p.text, p.media_url, p.frozen_at, fb.email
+        FROM posts p JOIN users u ON u.id = p.user_id LEFT JOIN users fb ON fb.id = p.frozen_by
+        WHERE p.frozen_at IS NOT NULL AND u.role IN ($below)
+      UNION ALL
+        SELECT 'comment', CAST(c.id AS TEXT), c.user_id, u.email, c.comment_text, NULL, c.frozen_at, fb.email
+        FROM comments c JOIN users u ON u.id = c.user_id LEFT JOIN users fb ON fb.id = c.frozen_by
+        WHERE c.frozen_at IS NOT NULL AND u.role IN ($below)";
+    $total = (int)$pdo->query("SELECT COUNT(*) FROM ($union)")->fetchColumn();
+    $stmt = $pdo->prepare("SELECT * FROM ($union) ORDER BY frozen_at DESC, type, id LIMIT ? OFFSET ?");
+    $stmt->execute([$limit, $offset]);
+    $items = [];
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+        $items[] = [
+            'type' => $r['type'],
+            'id' => $r['type'] === 'comment' || $r['type'] === 'user' ? (int)$r['id'] : $r['id'],
+            'userId' => (int)$r['user_id'],
+            'email' => $r['email'],
+            'text' => $r['text'] !== null ? snapshotText($r['text']) : null,
+            'mediaUrl' => ($r['media_url'] ?? null) && $r['media_url'] !== 'null' ? $r['media_url'] : null,
+            'frozenAt' => $r['frozen_at'],
+            'frozenByEmail' => $r['frozen_by_email'],
+        ];
+    }
+    respond(good(['items' => $items, 'hasMore' => ($offset + $limit) < $total, 'totalCount' => $total]));
+}
+
+// A post or comment by type and id: ['type', 'id', 'userId', 'text', 'frozen'],
+// or null. The id is a string for posts and an int for comments.
+function contentRow($pdo, $type, $id): ?array {
+    if ($type === 'post') {
+        $s = $pdo->prepare('SELECT id, user_id, text, frozen_at FROM posts WHERE id = ?');
+        $s->execute([(string)$id]);
+    } elseif ($type === 'comment') {
+        $s = $pdo->prepare('SELECT id, user_id, comment_text AS text, frozen_at FROM comments WHERE id = ?');
+        $s->execute([(int)$id]);
+    } else {
+        bad('Invalid content type', 400);
+    }
+    $r = $s->fetch(PDO::FETCH_ASSOC);
+    if (!$r) return null;
+    return ['type' => $type, 'id' => $r['id'], 'userId' => (int)$r['user_id'], 'text' => (string)$r['text'], 'frozen' => $r['frozen_at'] !== null];
+}
+
+function handle_adminUnfreezeContent($pdo, $user) {
+    $me = requireRole($pdo, $user, 'moderator');
+    $type = $_POST['type'] ?? '';
+    $row = contentRow($pdo, $type, $_POST['id'] ?? '');
+    if ($row === null) bad($type === 'post' ? 'Post not found' : 'Comment not found', 404);
+    $author = userRole($pdo, $row['userId']);
+    requireOutranks($me, $author);
+    if ($type === 'post') $pdo->prepare('UPDATE posts SET frozen_at = NULL, frozen_by = NULL WHERE id = ?')->execute([$row['id']]);
+    else $pdo->prepare('UPDATE comments SET frozen_at = NULL, frozen_by = NULL WHERE id = ?')->execute([$row['id']]);
+    logStaffAction($pdo, $me, 'unfreeze_content', $author, ['type' => $type, 'text' => snapshotText($row['text'])]);
+    respond(good(['frozen' => false]));
+}
+
+// Permanent. Frozen posts and comments only (R10): report it first.
+function handle_adminDeleteContent($pdo, $user) {
+    $me = requireRole($pdo, $user, 'admin');
+    $type = $_POST['type'] ?? '';
+    $row = contentRow($pdo, $type, $_POST['id'] ?? '');
+    if ($row === null) bad($type === 'post' ? 'Post not found' : 'Comment not found', 404);
+    if (!$row['frozen']) bad('Only frozen posts and comments can be deleted here. Report it first.', 400);
+    $author = userRole($pdo, $row['userId']);
+    requireOutranks($me, $author);
+    logStaffAction($pdo, $me, 'delete_content', $author, ['type' => $type, 'text' => snapshotText($row['text'])]);
+    if ($type === 'post') deletePostById($pdo, $row['id']);
+    else deleteCommentById($pdo, $row['id']);
+    respond(good(['deleted' => true]));
+}
+
+// Permanent (R5): the account must be frozen first, and the admin types its
+// email to confirm.
+function handle_adminDeleteAccount($pdo, $user) {
+    $me = requireRole($pdo, $user, 'admin');
+    $targetId = (int)($_POST['userId'] ?? 0);
+    if ($targetId <= 0) bad('Invalid user ID', 400);
+    $target = userRole($pdo, $targetId);
+    if ($target === null) bad('User not found', 404);
+    requireOutranks($me, $target);
+    if (!$target['frozen']) bad('Freeze this account before deleting it', 400);
+    if (strcasecmp(trim((string)($_POST['confirmEmail'] ?? '')), $target['email']) !== 0) bad("The email doesn't match", 400);
+    // Logged before deleting, so the email is still on record.
+    logStaffAction($pdo, $me, 'delete_account', $target);
+    deleteUserAndData($pdo, $targetId);
+    respond(good(['deleted' => true]));
+}
