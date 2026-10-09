@@ -185,5 +185,7 @@ return [
     '{actor} started following you' => '{actor} empezó a seguirte',
     '{actor} unfollowed you' => '{actor} dejó de seguirte',
     '{actor} mentioned you in a post' => '{actor} te mencionó en una publicación',
+    '{actor} replied to your comment' => '{actor} respondió a tu comentario',
+    '{actor} also replied in a thread you replied in' => '{actor} también respondió en una conversación en la que respondiste',
     '{actor} did something' => '{actor} hizo algo',
 ];

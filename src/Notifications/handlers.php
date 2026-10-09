@@ -30,7 +30,7 @@ function handle_getNotifications($pdo, $user) {
     // than excluded by the general actor_id != recipient_id noise filter.
     // Nothing from users hidden from the viewer (blocked either way, or frozen).
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'n.actor_id');
-    $stmt = $pdo->prepare("SELECT n.id, n.recipient_id, n.actor_id, COALESCE(u.email, n.actor_email) AS actor_email, n.type, n.post_id, n.created_at FROM notifications n LEFT JOIN users u ON n.actor_id = u.id WHERE n.recipient_id = ? AND (n.actor_id != ? OR n.type = 'mention')$hf ORDER BY n.created_at DESC LIMIT ? OFFSET ?");
+    $stmt = $pdo->prepare("SELECT n.id, n.recipient_id, n.actor_id, COALESCE(u.email, n.actor_email) AS actor_email, n.type, n.post_id, n.comment_id, n.created_at FROM notifications n LEFT JOIN users u ON n.actor_id = u.id WHERE n.recipient_id = ? AND (n.actor_id != ? OR n.type = 'mention')$hf ORDER BY n.created_at DESC LIMIT ? OFFSET ?");
     $stmt->execute(array_merge([$user['sub'], $user['sub']], $hp, [$limit, $offset]));
     $notifications = $stmt->fetchAll(PDO::FETCH_ASSOC);
 

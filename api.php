@@ -227,7 +227,7 @@ function isReportedBy($pdo, $viewerId, $type, $id) {
 // reads, then pushes it to whatever devices the recipient has enabled push
 // on. Push failures are swallowed -- a dead subscription must never break
 // the like/comment/follow that triggered it.
-function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $postId = null) {
+function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $postId = null, $commentId = null) {
     // Blocked either way, or a frozen actor: nothing is stored or pushed.
     if (isHiddenFrom($pdo, $recipientId, $actorId)) return;
     $now = date('Y-m-d H:i:s');
@@ -235,8 +235,8 @@ function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $p
         $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, created_at) VALUES (?, ?, ?, ?, ?)');
         $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $now]);
     } else {
-        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, post_id, created_at) VALUES (?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $postId, $now]);
+        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, post_id, comment_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $postId, $commentId, $now]);
     }
 
     // Deferred (P2) rather than run inline: each device is a fresh ECDH key
@@ -245,7 +245,7 @@ function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $p
     // now does the job the try/catch here used to do -- a dead subscription
     // or a slow push service must never affect the response the caller
     // already got.
-    defer(fn() => pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId));
+    defer(fn() => pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId, $commentId));
 }
 
 // $lang is the RECIPIENT's language (users.lang), not the request's: a push
@@ -259,11 +259,13 @@ function notificationText($actorEmail, $type, $lang = 'en') {
         case 'follow': return tr('{actor} started following you', $p, $lang);
         case 'unfollow': return tr('{actor} unfollowed you', $p, $lang);
         case 'mention': return tr('{actor} mentioned you in a post', $p, $lang);
+        case 'reply': return tr('{actor} replied to your comment', $p, $lang);
+        case 'thread_reply': return tr('{actor} also replied in a thread you replied in', $p, $lang);
     }
     return tr('{actor} did something', $p, $lang);
 }
 
-function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId) {
+function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $actorId, $commentId = null) {
     global $CONFIG;
 
     $stmt = $pdo->prepare('SELECT endpoint, p256dh, auth, kind FROM push_subscriptions WHERE user_id = ?');
@@ -271,7 +273,7 @@ function pushNotification($pdo, $recipientId, $actorEmail, $type, $postId, $acto
     $subscriptions = $stmt->fetchAll(PDO::FETCH_ASSOC);
     if (!$subscriptions) return;
 
-    $url = $postId ? "/app.html#/post/$postId" : "/app.html#/profile/$actorId";
+    $url = $postId ? "/app.html#/post/$postId" . ($commentId ? "?comment=$commentId" : '') : "/app.html#/profile/$actorId";
     $langStmt = $pdo->prepare('SELECT lang FROM users WHERE id = ?');
     $langStmt->execute([$recipientId]);
     $recipientLang = $langStmt->fetchColumn();
@@ -434,7 +436,7 @@ function getCommentCountsForPostIds($pdo, array $postIds, $viewerId = null) {
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
     [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
     // Frozen comments are left out for everyone, their author included.
-    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf AND frozen_at IS NULL GROUP BY post_id");
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf AND frozen_at IS NULL AND deleted_at IS NULL GROUP BY post_id");
     $stmt->execute(array_merge(array_values($postIds), $hp));
     $counts = array_fill_keys($postIds, 0);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];
@@ -512,7 +514,7 @@ function deleteUserAndData($pdo, int $uid): void {
         }
         $pdo->prepare('DELETE FROM posts WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM post_likes WHERE user_id = ?')->execute([$uid]);
-        $pdo->prepare('DELETE FROM comments WHERE user_id = ?')->execute([$uid]);
+        purgeUserComments($pdo, $uid);
 
         $stmt = $pdo->prepare('SELECT * FROM media WHERE user_id = ?');
         $stmt->execute([$uid]);
