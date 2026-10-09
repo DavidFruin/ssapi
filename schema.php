@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -78,12 +78,33 @@ function ensureSchema($pdo) {
         if ($v < 5) migration5($pdo);
         if ($v < 6) migration6($pdo);
         if ($v < 7) migration7($pdo);
+        if ($v < 8) migration8($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Comment replies (one level). comments.parent_id is the id of the top-level
+// comment a reply sits under (NULL for a top-level comment). deleted_at marks a
+// placeholder ("Comment deleted") kept so the replies under it have somewhere
+// to hang; its text is cleared and user_id is 0. notifications.comment_id is the
+// comment that caused a notification, so a tap can scroll to it. Guarded, so
+// re-running is harmless.
+function migration8($pdo) {
+    $add = [
+        'comments' => ['parent_id' => 'INTEGER', 'deleted_at' => 'TEXT'],
+        'notifications' => ['comment_id' => 'INTEGER'],
+    ];
+    foreach ($add as $table => $columns) {
+        $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+        foreach ($columns as $col => $type) {
+            if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
+        }
+    }
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_comments_parent ON comments(parent_id)');
 }
 
 // Staff roles (staff roles plan 1.1): users.role is 'user', 'moderator',
