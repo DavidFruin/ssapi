@@ -21,7 +21,8 @@ function handle_createComment($pdo, $user) {
     if (containsBlockedWord($text)) bad("Your comment contains a word that isn't allowed.", 400);
     $mentionIds = extractMentions($text);
 
-    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    // No new comments on a frozen post, its author included.
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ? AND frozen_at IS NULL');
     $stmt->execute([$postId]);
     $ownerId = $stmt->fetchColumn();
     if ($ownerId === false || isHiddenFrom($pdo, $user['sub'], $ownerId)) bad('Post not found', 404);
@@ -51,19 +52,27 @@ function handle_getPostComments($pdo, $user) {
     // frozen) are left out of both the page and the total. Comments the
     // viewer reported stay, marked reportedByMe.
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'c.user_id');
-    $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ?$hf ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
-    $stmt->execute(array_merge([$postId], $hp, [$limit, $offset]));
+    // Frozen comments: only their author sees them, flagged. A frozen post
+    // shows no comments at all.
+    [$ff, $fp] = frozenFilter('c', $user['sub']);
+    $frozenPost = $pdo->prepare('SELECT 1 FROM posts WHERE id = ? AND frozen_at IS NOT NULL');
+    $frozenPost->execute([$postId]);
+    if ($frozenPost->fetchColumn()) respond(good(['comments' => [], 'hasMore' => false, 'totalCount' => 0]));
+    $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, c.frozen_at, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ?$hf$ff ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
+    $stmt->execute(array_merge([$postId], $hp, $fp, [$limit, $offset]));
     $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
     $mentions = hydrateMentionsBatch($pdo, array_column($comments, 'text'));
     $reported = reportedByViewer($pdo, $user['sub'], 'comment');
     foreach ($comments as $i => &$comment) {
         $comment['mentions'] = $mentions[$i];
         $comment['reportedByMe'] = in_array((string)$comment['id'], $reported, true);
+        if ($comment['frozen_at'] !== null) $comment['frozen'] = true;
+        unset($comment['frozen_at']);
     }
     unset($comment);
 
-    $stmt = $pdo->prepare("SELECT COUNT(*) FROM comments c WHERE c.post_id = ?$hf");
-    $stmt->execute(array_merge([$postId], $hp));
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM comments c WHERE c.post_id = ?$hf$ff");
+    $stmt->execute(array_merge([$postId], $hp, $fp));
     $totalCount = $stmt->fetchColumn();
     $hasMore = ($offset + $limit) < $totalCount;
 

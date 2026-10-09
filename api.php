@@ -193,6 +193,14 @@ function hiddenFilter($pdo, $viewerId, $column) {
     return [" AND $column NOT IN (" . implode(',', array_fill(0, count($ids), '?')) . ')', $ids];
 }
 
+// Frozen posts and comments (staff roles plan R4): hidden from everyone except
+// their own author, who still sees them flagged frozen. [" AND (alias.frozen_at
+// IS NULL OR alias.user_id = ?)", [viewerId]] -- append like hiddenFilter().
+// $alias is always an identifier written in the code, never user input.
+function frozenFilter($alias, $viewerId) {
+    return [" AND ($alias.frozen_at IS NULL OR $alias.user_id = ?)", [(int)$viewerId]];
+}
+
 function isHiddenFrom($pdo, $viewerId, $userId) {
     return in_array((int)$userId, hiddenUserIds($pdo, $viewerId), true);
 }
@@ -420,12 +428,13 @@ function hydrateMentions($pdo, $text) {
 // One COUNT(*) GROUP BY instead of one query per post id -- a 25-post feed
 // page used to ask getPostCommentCounts for 25 individual COUNTs.
 // With $viewerId, comments the viewer can't see (blocked/frozen authors)
-// aren't counted.
+// aren't counted, and neither are frozen comments.
 function getCommentCountsForPostIds($pdo, array $postIds, $viewerId = null) {
     if (!$postIds) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
     [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
-    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf GROUP BY post_id");
+    // Frozen comments are left out for everyone, their author included.
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n FROM comments WHERE post_id IN ($placeholders)$hf AND frozen_at IS NULL GROUP BY post_id");
     $stmt->execute(array_merge(array_values($postIds), $hp));
     $counts = array_fill_keys($postIds, 0);
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) $counts[$row['post_id']] = (int)$row['n'];

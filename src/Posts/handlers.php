@@ -126,7 +126,7 @@ function postMediaToApi($row) {
 // stays for older clients (CLI/TUI, older app builds); media is the richer
 // description newer clients use.
 function postRowToApi($row, $likesByPost) {
-    return [
+    $post = [
         'id' => $row['id'],
         'text' => $row['text'],
         'timestamp' => $row['created_at'],
@@ -134,6 +134,13 @@ function postRowToApi($row, $likesByPost) {
         'mediaUrl' => $row['media_url'],
         'media' => postMediaToApi($row),
     ];
+    // Only the author is ever sent a frozen post (frozenFilter): flagged, and
+    // with no likes while it is hidden. Callers zero commentCount themselves.
+    if (!empty($row['frozen_at'])) {
+        $post['frozen'] = true;
+        $post['likes'] = [];
+    }
+    return $post;
 }
 
 function handle_getPostById($pdo, $user) {
@@ -143,17 +150,18 @@ function handle_getPostById($pdo, $user) {
     // LEFT, not inner: a post whose owner row is somehow gone should still
     // render (same fallback as before, just folded into one query) rather
     // than 404 as if the post itself didn't exist.
-    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email, ' . POST_MEDIA_COLUMNS . '
+    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, ' . POST_MEDIA_COLUMNS . '
         FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN . ' WHERE posts.id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || isHiddenFrom($pdo, $user['sub'], $row['user_id'])) bad('Post not found', 404);
+    if ($row['frozen_at'] !== null && (int)$row['user_id'] !== (int)$user['sub']) bad('Post not found', 404);
 
     $post = postRowToApi($row, getLikesForPostIds($pdo, [$postId], $user['sub']));
     $post['userID'] = (int)$row['user_id'];
     $post['userEmail'] = $row['email'] ?: '';
     $post['mentions'] = hydrateMentions($pdo, $post['text']);
-    $post['commentCount'] = getCommentCountsForPostIds($pdo, [$postId], $user['sub'])[$postId] ?? 0;
+    $post['commentCount'] = !empty($post['frozen']) ? 0 : (getCommentCountsForPostIds($pdo, [$postId], $user['sub'])[$postId] ?? 0);
     $post['reportedByMe'] = isReportedBy($pdo, $user['sub'], 'post', $postId);
     respond(good(['post' => $post]));
 }
@@ -167,8 +175,9 @@ function handle_getPostPreviews($pdo, $user) {
 
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'user_id');
-    $stmt = $pdo->prepare("SELECT id, text FROM posts WHERE id IN ($placeholders)$hf");
-    $stmt->execute(array_merge($postIds, $hp));
+    [$ff, $fp] = frozenFilter('posts', $user['sub']);
+    $stmt = $pdo->prepare("SELECT id, text FROM posts WHERE id IN ($placeholders)$hf$ff");
+    $stmt->execute(array_merge($postIds, $hp, $fp));
 
     $texts = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -253,13 +262,14 @@ function handle_post($pdo, $user) {
 // dedup would have reintroduced -- exactly the redundant-query class P9
 // just removed elsewhere.
 function fetchPostsPageForUser($pdo, $viewerId, $targetId, $targetEmail, $limit, $offset) {
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE posts.user_id = ?");
-    $countStmt->execute([$targetId]);
+    [$ff, $fp] = frozenFilter('posts', $viewerId);
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE posts.user_id = ?$ff");
+    $countStmt->execute(array_merge([$targetId], $fp));
     $totalCount = (int)$countStmt->fetchColumn();
 
-    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, " . POST_MEDIA_COLUMNS . "
-        FROM posts " . POST_MEDIA_JOIN . " WHERE posts.user_id = ? ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
-    $stmt->execute([$targetId]);
+    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, " . POST_MEDIA_COLUMNS . "
+        FROM posts " . POST_MEDIA_JOIN . " WHERE posts.user_id = ?$ff ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
+    $stmt->execute(array_merge([$targetId], $fp));
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $viewerId);
@@ -272,7 +282,7 @@ function fetchPostsPageForUser($pdo, $viewerId, $targetId, $targetEmail, $limit,
         $post['userID'] = $targetId;
         $post['userEmail'] = $targetEmail;
         $post['mentions'] = $mentions[$i];
-        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
+        $post['commentCount'] = !empty($post['frozen']) ? 0 : ($commentCounts[$row['id']] ?? 0);
         $post['reportedByMe'] = in_array((string)$row['id'], $reported, true);
         $posts[] = $post;
     }
@@ -318,18 +328,19 @@ function handle_fetchFollowedPosts($pdo, $user) {
     if (!$followedIds) $followedIds = [(int)$uid];
     $placeholders = implode(',', array_fill(0, count($followedIds), '?'));
 
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id IN ($placeholders)");
-    $countStmt->execute($followedIds);
+    [$ff, $fp] = frozenFilter('posts', $uid);
+    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id IN ($placeholders)$ff");
+    $countStmt->execute(array_merge($followedIds, $fp));
     $totalCount = (int)$countStmt->fetchColumn();
 
     // One query across every followed user, ordered and paged in SQL,
     // instead of pulling each user's whole post list into PHP to merge and
     // sort by hand.
-    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, users.email, " . POST_MEDIA_COLUMNS . "
+    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, " . POST_MEDIA_COLUMNS . "
         FROM posts JOIN users ON users.id = posts.user_id " . POST_MEDIA_JOIN . "
-        WHERE posts.user_id IN ($placeholders)
+        WHERE posts.user_id IN ($placeholders)$ff
         ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
-    $stmt->execute($followedIds);
+    $stmt->execute(array_merge($followedIds, $fp));
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $uid);
@@ -342,7 +353,7 @@ function handle_fetchFollowedPosts($pdo, $user) {
         $post['userID'] = (int)$row['user_id'];
         $post['userEmail'] = $row['email'];
         $post['mentions'] = $mentions[$i];
-        $post['commentCount'] = $commentCounts[$row['id']] ?? 0;
+        $post['commentCount'] = !empty($post['frozen']) ? 0 : ($commentCounts[$row['id']] ?? 0);
         $post['reportedByMe'] = in_array((string)$row['id'], $reported, true);
         $allPosts[] = $post;
     }
@@ -355,7 +366,8 @@ function handle_likePost($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
-    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    // A frozen post can't be liked by anyone, its author included.
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ? AND frozen_at IS NULL');
     $stmt->execute([$postId]);
     $realOwnerId = $stmt->fetchColumn();
     if ($realOwnerId === false || isHiddenFrom($pdo, $user['sub'], $realOwnerId)) bad('Post not found', 404);
@@ -381,7 +393,7 @@ function handle_unlikePost($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
-    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ? AND frozen_at IS NULL');
     $stmt->execute([$postId]);
     $ownerId = $stmt->fetchColumn();
     if ($ownerId === false) bad('Post not found', 404);
@@ -403,7 +415,7 @@ function handle_getPostLikes($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Missing post ID', 400);
 
-    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT user_id FROM posts WHERE id = ? AND frozen_at IS NULL');
     $stmt->execute([$postId]);
     $ownerId = $stmt->fetchColumn();
     if ($ownerId === false || isHiddenFrom($pdo, $user['sub'], $ownerId)) bad('Post not found', 404);
