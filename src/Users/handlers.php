@@ -15,12 +15,14 @@ function handle_getUserInfo($pdo, $user) {
     if ($targetId <= 0) bad('Invalid user ID', 400);
     if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
 
-    $stmt = $pdo->prepare('SELECT email, created_at FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT email, created_at, role FROM users WHERE id = ?');
     $stmt->execute([$targetId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row) bad('User not found', 404);
 
-    respond(good(['email' => $row['email'], 'created_at' => $row['created_at'] ?: 'Unknown']));
+    // Roles are public (staff roles plan R7): every profile shows one.
+    respond(good(['email' => $row['email'], 'created_at' => $row['created_at'] ?: 'Unknown',
+        'role' => isset(ROLE_RANK[$row['role'] ?? '']) ? $row['role'] : 'user']));
 }
 
 function handle_getUsers($pdo, $user) {

@@ -596,7 +596,8 @@ $HANDLERS = [
     'adminListReports' => 'handle_adminListReports', 'adminResolveReport' => 'handle_adminResolveReport',
     'adminUnfreezeUser' => 'handle_adminUnfreezeUser', 'adminListFrozen' => 'handle_adminListFrozen',
     'adminUnfreezeContent' => 'handle_adminUnfreezeContent', 'adminDeleteContent' => 'handle_adminDeleteContent',
-    'adminDeleteAccount' => 'handle_adminDeleteAccount',
+    'adminDeleteAccount' => 'handle_adminDeleteAccount', 'adminSetRole' => 'handle_adminSetRole',
+    'getStaff' => 'handle_getStaff', 'adminListActivity' => 'handle_adminListActivity',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',
     'revokeAllOtherSessions' => 'handle_revokeAllOtherSessions',
     'log' => 'handle_log_request'
