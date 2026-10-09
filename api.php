@@ -445,14 +445,24 @@ function getCommentCountsForPostIds($pdo, array $postIds, $viewerId = null) {
 function handle_deleteAccount($pdo, $user) {
     $password = $_POST['password'] ?? '';
     if (!$password) bad('Password required', 400);
+    // The owner account is the operator's own (staff roles plan R2).
+    $me = userRole($pdo, (int)$user['sub']);
+    if ($me && $me['role'] === 'owner') bad("The owner account can't be deleted. Ownership can only be changed on the server.", 400);
 
     $stmt = $pdo->prepare('SELECT password FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $hash = $stmt->fetchColumn();
     if (!$hash || !password_verify($password, $hash)) bad('Incorrect password', 401);
 
-    $uid = $user['sub'];
+    deleteUserAndData($pdo, (int)$user['sub']);
+    respond(good(['message' => 'Account deleted successfully']));
+}
 
+// Removes an account and everything of theirs: posts, comments, likes, media
+// (rows and files), follows, sessions, push subscriptions and so on. Shared by
+// handle_deleteAccount (the person themselves) and adminDeleteAccount (an
+// admin, after the account was frozen). Callers do the permission checks.
+function deleteUserAndData($pdo, int $uid): void {
     // Filesystem unlinks happen after commit (S13) -- same reasoning as
     // handle_deletePost: a failed unlink() must never roll back DB rows
     // that already deleted cleanly, and vice versa.
@@ -547,8 +557,6 @@ function handle_deleteAccount($pdo, $user) {
         if (is_dir($typeDir)) @rmdir($typeDir);
     }
     if (is_dir($mediaDir)) @rmdir($mediaDir);
-
-    respond(good(['message' => 'Account deleted successfully']));
 }
 
 // ============== DISPATCHER ==============

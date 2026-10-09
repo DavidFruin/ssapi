@@ -96,6 +96,7 @@ return [
     'Comment too long (max 5000 chars)' => 'El comentario es demasiado largo (máximo 5000 caracteres)',
     "Your post contains a word that isn't allowed." => 'Tu publicación contiene una palabra que no está permitida.',
     "Your comment contains a word that isn't allowed." => 'Tu comentario contiene una palabra que no está permitida.',
+    "The owner account can't be deleted. Ownership can only be changed on the server." => 'La cuenta del propietario no se puede eliminar. La propiedad solo se puede cambiar en el servidor.',
     'Moderators only' => 'Solo para moderadores',
     'Only the owner can do that' => 'Solo el propietario puede hacer eso',
     "The owner's account, posts and comments can't be changed." => 'La cuenta, las publicaciones y los comentarios del propietario no se pueden modificar.',
