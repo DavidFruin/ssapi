@@ -594,7 +594,7 @@ $HANDLERS = [
     'blockUser' => 'handle_blockUser', 'unblockUser' => 'handle_unblockUser',
     'getBlockedUsers' => 'handle_getBlockedUsers',
     'adminListReports' => 'handle_adminListReports', 'adminResolveReport' => 'handle_adminResolveReport',
-    'adminFreezeUser' => 'handle_adminFreezeUser', 'adminUnfreezeUser' => 'handle_adminUnfreezeUser',
+    'adminUnfreezeUser' => 'handle_adminUnfreezeUser',
     'getSessions' => 'handle_getSessions', 'revokeSession' => 'handle_revokeSession',
     'revokeAllOtherSessions' => 'handle_revokeAllOtherSessions',
     'log' => 'handle_log_request'

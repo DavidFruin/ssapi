@@ -194,40 +194,57 @@ function handle_acceptTerms($pdo, $user) {
     respond(good(['termsVersionAccepted' => $version]));
 }
 
-// ============== ADMIN ==============
-// users.is_admin is set by hand with sqlite3 on the server; there is no API
-// to grant it.
-function requireAdmin($pdo, $user) {
-    $s = $pdo->prepare('SELECT is_admin FROM users WHERE id = ?');
-    $s->execute([$user['sub']]);
-    if ((int)$s->fetchColumn() !== 1) bad('Admins only', 403);
+// ============== STAFF: THE MODERATION PAGE ==============
+// Staff roles plan. Everything below is what the website's /admin page calls.
+// Freezing happens only here, by resolving a report (R10): there is no direct
+// freeze endpoint. Roles come from src/Staff/handlers.php; the server checks
+// every rule, the apps only hide buttons.
+
+// First 200 characters, for the activity log.
+function snapshotText($text) {
+    if (!preg_match('/^.{0,200}/us', (string)$text, $m)) return (string)$text;
+    return $m[0];
 }
 
 // status: open (default), resolved (dismissed or actioned), dismissed, actioned.
 // Newest first. reportCount is how many open reports the same target has.
+// Staff only see reports about people BELOW their rank (plus reports whose
+// account is gone); the owner also sees reports about the owner itself, where
+// the only option is Dismiss (R1, R2). Moderators don't see who reported (R6).
 function handle_adminListReports($pdo, $user) {
-    requireAdmin($pdo, $user);
+    $me = requireRole($pdo, $user, 'moderator');
     [$limit, $offset] = pageParams();
     $status = $_POST['status'] ?? 'open';
     $where = ['open' => "r.status = 'open'", 'resolved' => "r.status != 'open'",
         'dismissed' => "r.status = 'dismissed'", 'actioned' => "r.status = 'actioned'"][$status] ?? null;
     if ($where === null) bad('Invalid status', 400);
 
-    $total = (int)$pdo->query("SELECT COUNT(*) FROM reports r WHERE $where")->fetchColumn();
+    $rank = ROLE_RANK[$me['role']];
+    $seen = array_keys(array_filter(ROLE_RANK, fn($r) => $r < $rank));
+    if ($me['role'] === 'owner') $seen[] = 'owner';
+    $roleList = "'" . implode("','", $seen) . "'";   // fixed role names, never input
+    $rankWhere = "$where AND (tu.id IS NULL OR tu.role IN ($roleList))";
+
+    $total = (int)$pdo->query("SELECT COUNT(*) FROM reports r LEFT JOIN users tu ON tu.id = r.target_user_id WHERE $rankWhere")->fetchColumn();
     $stmt = $pdo->prepare("SELECT r.*, rep.email AS reporter_email, tu.email AS target_user_email, tu.frozen_at AS target_frozen_at,
-            res.email AS resolved_by_email,
+            tu.role AS target_role, res.email AS resolved_by_email,
             (SELECT COUNT(*) FROM reports o WHERE o.target_type = r.target_type AND o.target_id = r.target_id AND o.status = 'open') AS open_count,
             CASE r.target_type
                 WHEN 'post' THEN EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id)
                 WHEN 'comment' THEN EXISTS (SELECT 1 FROM comments c WHERE c.id = CAST(r.target_id AS INTEGER))
-                ELSE EXISTS (SELECT 1 FROM users u WHERE u.id = CAST(r.target_id AS INTEGER)) END AS target_exists
+                ELSE EXISTS (SELECT 1 FROM users u WHERE u.id = CAST(r.target_id AS INTEGER)) END AS target_exists,
+            CASE r.target_type
+                WHEN 'post' THEN (SELECT p.frozen_at FROM posts p WHERE p.id = r.target_id)
+                WHEN 'comment' THEN (SELECT c.frozen_at FROM comments c WHERE c.id = CAST(r.target_id AS INTEGER))
+                ELSE NULL END AS content_frozen_at
         FROM reports r
         LEFT JOIN users rep ON rep.id = r.reporter_id
         LEFT JOIN users tu ON tu.id = r.target_user_id
         LEFT JOIN users res ON res.id = r.resolved_by
-        WHERE $where ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?");
+        WHERE $rankWhere ORDER BY r.created_at DESC, r.id DESC LIMIT ? OFFSET ?");
     $stmt->execute([$limit, $offset]);
 
+    $showReporter = $rank >= ROLE_RANK['admin'];
     $reports = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
         $reports[] = [
@@ -236,9 +253,11 @@ function handle_adminListReports($pdo, $user) {
             'targetId' => $r['target_id'],
             'targetUserId' => $r['target_user_id'] !== null ? (int)$r['target_user_id'] : null,
             'targetUserEmail' => $r['target_user_email'],
+            'targetUserRole' => $r['target_user_email'] !== null && isset(ROLE_RANK[$r['target_role'] ?? '']) ? $r['target_role'] : ($r['target_user_email'] !== null ? 'user' : null),
             'targetUserFrozen' => $r['target_frozen_at'] !== null,
             'targetExists' => (bool)$r['target_exists'],
-            'reporterEmail' => $r['reporter_email'],
+            'contentFrozen' => $r['content_frozen_at'] !== null,
+            'reporterEmail' => $showReporter ? $r['reporter_email'] : null,
             'reason' => $r['reason'],
             'details' => $r['details'],
             'snapshot' => $r['snapshot'],
@@ -264,16 +283,33 @@ function freezeUser($pdo, $userId) {
     return true;
 }
 
-// action: dismiss | delete_content | freeze_user | delete_and_freeze.
-// Resolving one report resolves every open report on the same target the
-// same way.
+// Freezes one post or comment (hidden from everyone but its author).
+// Returns false if it doesn't exist.
+function freezeContent($pdo, $type, $id, $byUserId) {
+    $now = date('Y-m-d H:i:s');
+    if ($type === 'post') {
+        $s = $pdo->prepare('UPDATE posts SET frozen_at = COALESCE(frozen_at, ?), frozen_by = COALESCE(frozen_by, ?) WHERE id = ?');
+        $s->execute([$now, $byUserId, $id]);
+    } else {
+        $s = $pdo->prepare('UPDATE comments SET frozen_at = COALESCE(frozen_at, ?), frozen_by = COALESCE(frozen_by, ?) WHERE id = ?');
+        $s->execute([$now, $byUserId, (int)$id]);
+    }
+    return $s->rowCount() > 0;
+}
+
+// resolution: dismiss | freeze_content | freeze_user | delete_content |
+// delete_and_freeze. The only way to freeze anything (R10). Moderators may
+// dismiss and freeze; deleting is admin and up. Every resolution first checks
+// the caller outranks the reported account (R1-R3) -- the one exception is
+// the owner dismissing a report about the owner. Resolving one report
+// resolves every open report on the same target the same way.
 function handle_adminResolveReport($pdo, $user) {
-    requireAdmin($pdo, $user);
+    $me = requireRole($pdo, $user, 'moderator');
     $reportId = (int)($_POST['reportId'] ?? 0);
     // 'resolution', not 'action': every request's action field is already the endpoint name.
     $act = $_POST['resolution'] ?? '';
     $note = trim((string)($_POST['note'] ?? ''));
-    if (!in_array($act, ['dismiss', 'delete_content', 'freeze_user', 'delete_and_freeze'], true)) bad('Invalid action', 400);
+    if (!in_array($act, ['dismiss', 'freeze_content', 'freeze_user', 'delete_content', 'delete_and_freeze'], true)) bad('Invalid action', 400);
     if (strlen($note) > 500) bad('Note is too long (max 500 characters)', 400);
 
     $s = $pdo->prepare('SELECT * FROM reports WHERE id = ?');
@@ -283,11 +319,23 @@ function handle_adminResolveReport($pdo, $user) {
 
     $deletes = in_array($act, ['delete_content', 'delete_and_freeze'], true);
     $freezes = in_array($act, ['freeze_user', 'delete_and_freeze'], true);
-    if ($deletes && $report['target_type'] === 'user') bad('A user report has no content to delete. Freeze the user instead.', 400);
-    $targetUserId = $report['target_user_id'] !== null ? (int)$report['target_user_id'] : null;
-    if ($freezes && $targetUserId === null) bad('That account no longer exists', 400);
-    if ($freezes && $targetUserId === (int)$user['sub']) bad("You can't freeze your own account", 400);
+    if ($deletes && ROLE_RANK[$me['role']] < ROLE_RANK['admin']) bad('Admins only', 403);
 
+    $targetUserId = $report['target_user_id'] !== null ? (int)$report['target_user_id'] : null;
+    $target = $targetUserId !== null ? userRole($pdo, $targetUserId) : null;
+    $ownerDismissingOwn = $act === 'dismiss' && $me['role'] === 'owner' && $target && $target['id'] === $me['id'];
+    if (!$ownerDismissingOwn) requireOutranks($me, $target);
+
+    if (($deletes || $act === 'freeze_content') && $report['target_type'] === 'user') {
+        bad($act === 'freeze_content'
+            ? 'A user report has no post or comment to freeze. Freeze the account instead.'
+            : 'A user report has no content to delete. Freeze the user instead.', 400);
+    }
+    if ($freezes && $target === null) bad('That account no longer exists', 400);
+
+    if ($act === 'freeze_content' && !freezeContent($pdo, $report['target_type'], $report['target_id'], $me['id'])) {
+        bad('That content no longer exists', 400);
+    }
     if ($deletes) {
         if ($report['target_type'] === 'post') deletePostById($pdo, $report['target_id']);
         else deleteCommentById($pdo, $report['target_id']);
@@ -300,27 +348,23 @@ function handle_adminResolveReport($pdo, $user) {
         ->execute([$act === 'dismiss' ? 'dismissed' : 'actioned', date('Y-m-d H:i:s'), $user['sub'], $resolution,
             $report['target_type'], $report['target_id'], $reportId]);
 
-    writeLog('WARN', 'api', "moderation: admin {$user['sub']} resolved report #$reportId ({$report['target_type']} {$report['target_id']}) with $act");
+    logStaffAction($pdo, $me, 'resolve_report', $target, [
+        'reportId' => $reportId, 'resolution' => $act, 'type' => $report['target_type'],
+        'text' => snapshotText($report['snapshot'] ?? ''),
+    ]);
+    writeLog('WARN', 'api', "moderation: {$me['role']} {$user['sub']} resolved report #$reportId ({$report['target_type']} {$report['target_id']}) with $act");
     respond(good(['resolved' => true]));
 }
 
-function handle_adminFreezeUser($pdo, $user) {
-    requireAdmin($pdo, $user);
-    $targetId = (int)($_POST['userId'] ?? 0);
-    if ($targetId <= 0) bad('Invalid user ID', 400);
-    if ($targetId === (int)$user['sub']) bad("You can't freeze your own account", 400);
-    if (!freezeUser($pdo, $targetId)) bad('User not found', 404);
-    writeLog('WARN', 'api', "moderation: admin {$user['sub']} froze user $targetId");
-    respond(good(['frozen' => true]));
-}
-
 function handle_adminUnfreezeUser($pdo, $user) {
-    requireAdmin($pdo, $user);
+    $me = requireRole($pdo, $user, 'moderator');
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0) bad('Invalid user ID', 400);
-    $s = $pdo->prepare('UPDATE users SET frozen_at = NULL WHERE id = ?');
-    $s->execute([$targetId]);
-    if ($s->rowCount() === 0) bad('User not found', 404);
-    writeLog('WARN', 'api', "moderation: admin {$user['sub']} unfroze user $targetId");
+    $target = userRole($pdo, $targetId);
+    if ($target === null) bad('User not found', 404);
+    requireOutranks($me, $target);
+    $pdo->prepare('UPDATE users SET frozen_at = NULL WHERE id = ?')->execute([$targetId]);
+    logStaffAction($pdo, $me, 'unfreeze_user', $target);
+    writeLog('WARN', 'api', "moderation: {$me['role']} {$user['sub']} unfroze user $targetId");
     respond(good(['frozen' => false]));
 }

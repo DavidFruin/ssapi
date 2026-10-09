@@ -157,6 +157,8 @@ return [
     'Note is too long (max 500 characters)' => 'La nota es demasiado larga (máximo 500 caracteres)',
     'Report not found' => 'No se encontró el reporte',
     'A user report has no content to delete. Freeze the user instead.' => 'Un reporte de usuario no tiene contenido que eliminar. Suspende al usuario.',
+    'A user report has no post or comment to freeze. Freeze the account instead.' => 'Un reporte de usuario no tiene publicación ni comentario que suspender. Suspende la cuenta.',
+    'That content no longer exists' => 'Ese contenido ya no existe',
     'That account no longer exists' => 'Esa cuenta ya no existe',
     "You can't freeze your own account" => 'No puedes suspender tu propia cuenta',
 
