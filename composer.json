@@ -20,7 +20,8 @@
             "src/Notifications/handlers.php",
             "src/Media/handlers.php",
             "src/Moderation/handlers.php",
-            "src/Invites/handlers.php"
+            "src/Invites/handlers.php",
+            "src/Staff/handlers.php"
         ]
     }
 }

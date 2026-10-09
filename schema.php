@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -77,12 +77,48 @@ function ensureSchema($pdo) {
         if ($v < 4) migration4($pdo);
         if ($v < 5) migration5($pdo);
         if ($v < 6) migration6($pdo);
+        if ($v < 7) migration7($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Staff roles (staff roles plan 1.1): users.role is 'user', 'moderator',
+// 'admin' or 'owner'. The column normally exists already (migration6, invites);
+// it is added here only if still missing. Anyone with the old is_admin flag
+// becomes an admin, but never over an existing role (so the owner stays the
+// owner). is_admin stays in the table and is no longer read. Posts and
+// comments get frozen_at/frozen_by (hidden until unfrozen, a staff action),
+// and staff_actions is the activity log; emails and a short text snapshot are
+// copied in so it stays readable after something is deleted. Guarded, so
+// re-running is harmless.
+function migration7($pdo) {
+    $add = [
+        'users' => ['role' => "TEXT NOT NULL DEFAULT 'user'"],
+        'posts' => ['frozen_at' => 'TEXT', 'frozen_by' => 'INTEGER'],
+        'comments' => ['frozen_at' => 'TEXT', 'frozen_by' => 'INTEGER'],
+    ];
+    foreach ($add as $table => $columns) {
+        $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+        foreach ($columns as $col => $type) {
+            if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
+        }
+    }
+    $pdo->exec("UPDATE users SET role = 'admin' WHERE is_admin = 1 AND role = 'user'");
+    $pdo->exec('CREATE TABLE IF NOT EXISTS staff_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        actor_id INTEGER,
+        actor_email TEXT NOT NULL,
+        action TEXT NOT NULL,
+        target_user_id INTEGER,
+        target_email TEXT,
+        details TEXT,
+        created_at TEXT NOT NULL)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_users_role ON users(role)');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_staff_actions_created ON staff_actions(created_at)');
 }
 
 // Invites (access plan Step 1): each member can invite one person with a
