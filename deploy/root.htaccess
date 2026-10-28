@@ -34,6 +34,12 @@ SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
   <If "%{REQUEST_URI} =~ m#^/(app/)?(assets|pwa-icons)/|^/media/#">
     Header set Cache-Control "public, max-age=31536000, immutable"
   </If>
+  # Post and profile pages are for members only: keep them out of search engines.
+  # THE_REQUEST, not REQUEST_URI: these are rewritten to /app/index.html, so by
+  # the time headers are set REQUEST_URI no longer says /post/ or /profile/.
+  <If "%{THE_REQUEST} =~ m#^[A-Z]+ /(post|profile)/#">
+    Header set X-Robots-Tag "noindex"
+  </If>
   # Must always revalidate, or a reload can load stale JS after a deploy.
   <FilesMatch "^(index\.html|sw\.js|manifest\.json|android-version\.json)$">
     Header set Cache-Control "no-cache"
