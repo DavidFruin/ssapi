@@ -71,6 +71,15 @@ function bearerToken() {
     return '';
 }
 
+// The API version the app says it speaks (X-SS-Api). Apps that don't send it
+// (the terminal clients, older phone builds) are version 1 and keep getting
+// the behaviour they were written for:
+//   2  stores the new refresh token each refresh returns (rotation, below);
+//      reads likeCount/likedByMe instead of a post's full list of likes.
+function clientApiVersion() {
+    return max(1, (int)($_SERVER['HTTP_X_SS_API'] ?? 1));
+}
+
 // ============== SESSIONS ==============
 
 function refreshTokenHash($token) {
@@ -233,22 +242,54 @@ function sessionRevokeAllForUser($pdo, $userId) {
     $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$userId]);
 }
 
+// How long the token a refresh just replaced is still accepted. Two requests
+// from one app (two browser tabs, two calls failing at once) can both send
+// the old token; the slower one must not look like a theft.
+const REFRESH_GRACE = 60;
+
 // Exchanges a refresh token for a fresh access token, continuing the same
 // session rather than starting a new one. The session's expiry slides
 // forward on each use, so an actively-used device never has to re-enter a
-// password. No rotation: the refresh token itself stays the same for the
-// life of the session.
+// password.
+//
+// Rotation: each refresh also replaces the refresh token, and the old one
+// stops working. A stolen token is then good for one use at most, and that
+// use shows: when the old token turns up again later (from the thief or
+// from the real device, whichever was second), the session is closed and
+// its owner logs in again. Only for apps that keep the new token: version 2
+// and up (clientApiVersion). Once a session rotates it always does, so a
+// thief can't opt out by leaving the header off. Older apps keep one token
+// for the life of the session, as before.
+//
+// Returns jwt, userId, sessionId and refreshToken (null when the token
+// didn't change), or false.
 function sessionRefresh($pdo, $refreshToken) {
     global $CONFIG;
     $accessTtl = $CONFIG['session_access_ttl'] ?? 86400;
     $refreshTtl = $CONFIG['session_refresh_ttl'] ?? 2592000;
     if (!$refreshToken) return false;
 
-    $stmt = $pdo->prepare('SELECT s.*, u.frozen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.refresh_hash = ?');
-    $stmt->execute([refreshTokenHash($refreshToken)]);
+    $hash = refreshTokenHash($refreshToken);
+    $select = 'SELECT s.*, u.frozen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE ';
+    $stmt = $pdo->prepare($select . 's.refresh_hash = ?');
+    $stmt->execute([$hash]);
     $session = $stmt->fetch(PDO::FETCH_ASSOC);
+    $isCurrent = (bool)$session;
 
-    if (!$session) return false;
+    if (!$session) {
+        // Not any session's current token. Is it the one a session used
+        // until its last refresh?
+        $stmt = $pdo->prepare($select . 's.prev_refresh_hash = ?');
+        $stmt->execute([$hash]);
+        $session = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$session) return false;
+        if ($session['revoked_at'] === null && time() - (int)$session['rotated_at'] > REFRESH_GRACE) {
+            sessionRevoke($pdo, $session['id']);
+            logApiError('refreshToken', 'replaced refresh token used again; session closed', ['session' => $session['id'], 'user' => (int)$session['user_id']]);
+            return false;
+        }
+    }
+
     // Freezing revokes every session already; this also covers a refresh
     // racing the freeze.
     if ($session['frozen_at'] !== null) return false;
@@ -256,8 +297,21 @@ function sessionRefresh($pdo, $refreshToken) {
     if ($session['expires_at'] < date('Y-m-d H:i:s')) return false;
 
     $now = date('Y-m-d H:i:s');
-    $stmt = $pdo->prepare('UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?');
-    $stmt->execute([$now, date('Y-m-d H:i:s', time() + $refreshTtl), $session['id']]);
+    $expires = date('Y-m-d H:i:s', time() + $refreshTtl);
+    $newToken = null;
+    if ($isCurrent && ((int)$session['rotating'] === 1 || clientApiVersion() >= 2)) {
+        $newToken = bin2hex(random_bytes(32));
+        // "AND refresh_hash = old": of two refreshes sending the same token
+        // at the same moment only one replaces it. The other keeps going
+        // with a new access token, like the grace case above.
+        $stmt = $pdo->prepare('UPDATE sessions SET refresh_hash = ?, prev_refresh_hash = ?, rotated_at = ?, rotating = 1,
+            last_used_at = ?, expires_at = ? WHERE id = ? AND refresh_hash = ?');
+        $stmt->execute([refreshTokenHash($newToken), $hash, time(), $now, $expires, $session['id'], $hash]);
+        if ($stmt->rowCount() === 0) $newToken = null;
+    } else {
+        $stmt = $pdo->prepare('UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?');
+        $stmt->execute([$now, $expires, $session['id']]);
+    }
 
     sessionSweep($pdo, $session['user_id']);
 
@@ -268,6 +322,7 @@ function sessionRefresh($pdo, $refreshToken) {
             'iat' => time(),
             'exp' => time() + $accessTtl,
         ]),
+        'refreshToken' => $newToken,
         'userId' => (int)$session['user_id'],
         'sessionId' => $session['id'],
     ];

@@ -247,11 +247,15 @@ function handle_refreshToken($pdo) {
     clearAttempts($pdo, $keys);
 
     logMsg("REFRESH: user={$result['userId']} session={$result['sessionId']}");
-    respond(good([
+    $out = [
         'jwt' => $result['jwt'],
         'userId' => $result['userId'],
         'expiresIn' => $CONFIG['session_access_ttl'] ?? 86400,
-    ]));
+    ];
+    // Present only when the token was replaced; the app must store it, the
+    // one it sent has stopped working.
+    if ($result['refreshToken'] !== null) $out['refreshToken'] = $result['refreshToken'];
+    respond(good($out));
 }
 
 // The device list. Deliberately never exposes refresh_hash - the whole

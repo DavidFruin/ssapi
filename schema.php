@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -86,12 +86,35 @@ function ensureSchema($pdo) {
         if ($v < 6) migration6($pdo);
         if ($v < 7) migration7($pdo);
         if ($v < 8) migration8($pdo);
+        if ($v < 9) migration9($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
         $pdo->exec('ROLLBACK');
         throw $e;
     }
+}
+
+// Adds each column in $columns ([name => SQL type]) that $table doesn't have
+// yet, so a migration can run again without failing.
+function addColumns($pdo, $table, array $columns) {
+    $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+    foreach ($columns as $col => $type) {
+        if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
+    }
+}
+
+// Refresh-token rotation (review S3). rotating: this session gets a new
+// refresh token on every refresh. prev_refresh_hash and rotated_at: the token
+// it replaced and when, so an old token turning up later can be told apart
+// from an unknown one (see sessionRefresh).
+function migration9($pdo) {
+    addColumns($pdo, 'sessions', [
+        'rotating' => 'INTEGER NOT NULL DEFAULT 0',
+        'prev_refresh_hash' => 'TEXT',
+        'rotated_at' => 'INTEGER',
+    ]);
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sessions_prev_refresh ON sessions(prev_refresh_hash)');
 }
 
 // Comment replies (one level). comments.parent_id is the id of the top-level
