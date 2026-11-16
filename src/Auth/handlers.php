@@ -17,9 +17,39 @@
 // sessionRevokeAllForUser(), refreshTokenHash(). Those are cross-module
 // infrastructure, not Auth-specific, so they aren't moving here.
 
-// Stored in place of an OTP once it has been verified. It can never match a
-// submitted code because verify actions only accept 6 digits.
-const OTP_VERIFIED = 'VERIFIED';
+// ============== ONE-TIME CODES ==============
+// What sits in users.reset_otp and pending_users.otp is never readable:
+//   'c:<hash>'  an emailed 6-digit code that hasn't been entered yet
+//   't:<hash>'  the code was entered; the hash is of the verify token that
+//               was handed back to whoever entered it
+// The last step (set the password) needs that token, so knowing someone's
+// email is not enough to finish their reset or registration for them.
+//
+// A 6-digit code has only a million values, so a plain hash could be undone
+// at once by anyone holding the database or a backup. It is keyed with the
+// server secret, which lives in private/.env and not in the database. The
+// token is 256 random bits, so plain SHA-256 is enough for it.
+function otpCodeHash($email, $otp) {
+    global $CONFIG;
+    $secret = $CONFIG['jwt_secret'] ?? null;
+    if (!$secret) { error_log('ssapi: JWT_SECRET not configured'); respond(['valid' => false, 'error' => 'Server misconfigured'], 500); }
+    return 'c:' . hash_hmac('sha256', strtolower(trim($email)) . ':' . $otp, $secret);
+}
+
+function verifyTokenHash($token) {
+    return 't:' . hash('sha256', $token);
+}
+
+function storedHashMatches($stored, $expected) {
+    return is_string($stored) && $stored !== '' && hash_equals($stored, $expected);
+}
+
+// The last step of a reset or registration is limited per IP only. The token
+// can't be guessed, so a per-email lock would add nothing except a way for a
+// stranger to block someone else's reset.
+function finalStepKeys($scope) {
+    return ['ip' => attemptKeys($scope, '-')['ip']];
+}
 
 // ============== ATTEMPT LIMITS ==============
 // Failed logins and OTP checks are counted per email and per IP. Too many
@@ -264,7 +294,7 @@ function handle_sendOTP($pdo) {
 
     $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
-    $stmt->execute([$otp, time() + 600, $row['id']]);
+    $stmt->execute([otpCodeHash($row['email'], $otp), time() + 600, $row['id']]);
 
     $subject = tr('Your Simple Social Password Reset OTP');
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
@@ -282,12 +312,12 @@ function handle_verifyOTP($pdo) {
     checkAttemptLimit($pdo, $keys);
     if (!preg_match('/^\d{6}$/', $otp)) bad('Incorrect OTP', 400);
 
-    $stmt = $pdo->prepare('SELECT id, reset_otp, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
+    $stmt = $pdo->prepare('SELECT id, email, reset_otp, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !$row['reset_otp']) bad('No OTP requested or expired', 400);
     if (time() > $row['reset_expires']) bad('OTP has expired. Please request a new one.', 400);
-    if ($otp !== $row['reset_otp']) {
+    if (!storedHashMatches($row['reset_otp'], otpCodeHash($row['email'], $otp))) {
         if (recordFailedAttempt($pdo, $keys)) {
             $pdo->prepare('UPDATE users SET reset_otp = NULL, reset_expires = 0 WHERE id = ?')->execute([$row['id']]);
         }
@@ -295,26 +325,38 @@ function handle_verifyOTP($pdo) {
     }
     clearAttempts($pdo, $keys);
 
-    // Mark verified so resetPassword can require it (valid 10 more minutes).
+    // The code is used up. In its place goes the hash of a token that only
+    // this caller receives; resetPassword requires it (valid 10 more minutes).
+    $token = bin2hex(random_bytes(32));
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
-    $stmt->execute([OTP_VERIFIED, time() + 600, $row['id']]);
-    respond(good(['message' => 'OTP verified! Set your new password.']));
+    $stmt->execute([verifyTokenHash($token), time() + 600, $row['id']]);
+    respond(good(['message' => 'OTP verified! Set your new password.', 'verifyToken' => $token]));
 }
 
 function handle_resetPassword($pdo) {
     $email = trim($_POST['email'] ?? '');
     $password = $_POST['password'] ?? '';
     $confirm = $_POST['confirm'] ?? '';
+    $token = trim($_POST['verifyToken'] ?? '');
     if (!$email || !$password || $password !== $confirm) bad('Passwords do not match or are empty', 400);
-    validatePasswordRules($password);
+
+    $keys = finalStepKeys('reset');
+    checkAttemptLimit($pdo, $keys);
 
     $stmt = $pdo->prepare('SELECT id, reset_otp, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row) bad('User not found', 404);
-    if ($row['reset_otp'] !== OTP_VERIFIED || time() > $row['reset_expires']) {
+    // One answer for every way this can fail (no such account, no code
+    // entered, wrong or missing token, too late), so it says nothing about
+    // which emails have accounts.
+    if (!$row || $token === '' || time() > $row['reset_expires']
+        || !storedHashMatches($row['reset_otp'], verifyTokenHash($token))) {
+        recordFailedAttempt($pdo, $keys);
         bad('Verify your OTP before resetting your password', 403);
     }
+    // After the token check: a password that breaks the rules doesn't use
+    // the token up, so the person can simply try a better one.
+    validatePasswordRules($password);
 
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $stmt = $pdo->prepare('UPDATE users SET password = ?, reset_otp = NULL, reset_expires = 0 WHERE id = ?');
@@ -359,7 +401,7 @@ function handle_sendRegisterOTP($pdo) {
     $stmt = $pdo->prepare('DELETE FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
     $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated, invite_code) VALUES (?, ?, ?, ?, ?)');
-    $stmt->execute([$email, '', $otp, time(), $inviteCode]);
+    $stmt->execute([$email, '', otpCodeHash($email, $otp), time(), $inviteCode]);
 
     $subject = tr('Your Simple Social Registration OTP');
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
@@ -382,7 +424,7 @@ function handle_verifyRegisterOTP($pdo) {
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !$row['otp']) bad('No OTP requested', 400);
     if (time() - $row['dateCreated'] > 600) bad('OTP has expired. Please request a new one.', 400);
-    if ($otp !== $row['otp']) {
+    if (!storedHashMatches($row['otp'], otpCodeHash($email, $otp))) {
         if (recordFailedAttempt($pdo, $keys)) {
             $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
         }
@@ -390,10 +432,12 @@ function handle_verifyRegisterOTP($pdo) {
     }
     clearAttempts($pdo, $keys);
 
-    // Mark verified so finishRegister can require it (valid 10 more minutes).
+    // The code is used up; finishRegister requires the token handed back
+    // here (valid 10 more minutes).
+    $token = bin2hex(random_bytes(32));
     $stmt = $pdo->prepare('UPDATE pending_users SET otp = ?, dateCreated = ? WHERE email = ?');
-    $stmt->execute([OTP_VERIFIED, time(), $email]);
-    respond(good(['message' => 'OTP verified! Set your password.']));
+    $stmt->execute([verifyTokenHash($token), time(), $email]);
+    respond(good(['message' => 'OTP verified! Set your password.', 'verifyToken' => $token]));
 }
 
 function handle_finishRegister($pdo) {
@@ -401,14 +445,21 @@ function handle_finishRegister($pdo) {
     $password = $_POST['password'] ?? '';
     $confirm = $_POST['confirm'] ?? '';
 
+    $token = trim($_POST['verifyToken'] ?? '');
     if (!$email || !$password || $password !== $confirm) bad('Passwords do not match or are empty', 400);
-    validatePasswordRules($password);
+
+    $keys = finalStepKeys('register');
+    checkAttemptLimit($pdo, $keys);
 
     $stmt = $pdo->prepare('SELECT otp, dateCreated, invite_code FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || !$row['otp'] || time() - $row['dateCreated'] > 600) bad('Session expired. Please start over.', 400);
-    if ($row['otp'] !== OTP_VERIFIED) bad('Verify your OTP before creating your account', 403);
+    if ($token === '' || !storedHashMatches($row['otp'], verifyTokenHash($token))) {
+        recordFailedAttempt($pdo, $keys);
+        bad('Verify your OTP before creating your account', 403);
+    }
+    validatePasswordRules($password);
 
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $created_at = date('Y-m-d H:i:s');

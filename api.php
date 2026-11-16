@@ -46,6 +46,8 @@ function logRequest($action, $params = [], $isPublic = false) {
     // must never reach the log - more sensitive than the access token, not
     // less, because it long outlives it.
     if (isset($safeParams['refreshToken'])) $safeParams['refreshToken'] = '***';
+    // Proof that a one-time code was entered; as good as the code itself.
+    if (isset($safeParams['verifyToken'])) $safeParams['verifyToken'] = '***';
     if (isset($safeParams['postText'])) $safeParams['postText'] = substr($safeParams['postText'], 0, 50) . (strlen($safeParams['postText']) > 50 ? '...' : '');
     if (isset($safeParams['text'])) $safeParams['text'] = substr($safeParams['text'], 0, 50) . (strlen($safeParams['text']) > 50 ? '...' : '');
     $paramsStr = json_encode($safeParams);
