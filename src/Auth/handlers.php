@@ -52,17 +52,37 @@ function finalStepKeys($scope) {
 }
 
 // ============== ATTEMPT LIMITS ==============
-// Failed logins and OTP checks are counted per email and per IP. Too many
-// failures inside the window locks that email (or IP) out for the window.
+// Failures are counted per key inside a 15-minute window; reaching a key's
+// limit locks that key for the window.
+//
+// One-time codes and refresh tokens: per email (or token) and per IP. A
+// 6-digit code needs a hard cap on guesses, whoever is guessing.
+//
+// Login is different, because a hard per-email lock lets anyone keep a
+// member out just by typing wrong passwords for their email. So:
+//   pair   5 failures from one IP for one email: that IP is locked for that
+//          email. The owner, on another connection, is not affected.
+//   ip     20 failures from one IP, whatever the emails.
+//   email  100 failures for one email from all IPs together. Reaching it
+//          takes 20 or more addresses working together; it keeps a ceiling
+//          on guessing spread across many addresses.
 const ATTEMPT_WINDOW = 900;
 const ATTEMPT_LIMIT_EMAIL = 5;
 const ATTEMPT_LIMIT_IP = 20;
+const ATTEMPT_LIMIT_LOGIN_EMAIL = 100;
 
 function attemptKeys($scope, $email) {
-    return [
-        'email' => "$scope:email:" . strtolower(trim($email)),
-        'ip' => "$scope:ip:" . ($_SERVER['REMOTE_ADDR'] ?? '-'),
-    ];
+    $email = strtolower(trim($email));
+    $ip = $_SERVER['REMOTE_ADDR'] ?? '-';
+    $keys = ['email' => "$scope:email:$email", 'ip' => "$scope:ip:$ip"];
+    if ($scope === 'login') $keys['pair'] = "login:pair:$email|$ip";
+    return $keys;
+}
+
+function attemptLimit($type, $key) {
+    if ($type === 'ip') return ATTEMPT_LIMIT_IP;
+    if ($type === 'email' && str_starts_with($key, 'login:')) return ATTEMPT_LIMIT_LOGIN_EMAIL;
+    return ATTEMPT_LIMIT_EMAIL;
 }
 
 function checkAttemptLimit($pdo, $keys) {
@@ -81,7 +101,6 @@ function checkAttemptLimit($pdo, $keys) {
 // Returns true if this failure locked the email out.
 function recordFailedAttempt($pdo, $keys) {
     $now = time();
-    $limits = ['email' => ATTEMPT_LIMIT_EMAIL, 'ip' => ATTEMPT_LIMIT_IP];
     $select = $pdo->prepare('SELECT failures, window_start FROM auth_attempts WHERE attempt_key = ?');
     $save = $pdo->prepare('INSERT OR REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, ?)');
     $emailLocked = false;
@@ -91,15 +110,20 @@ function recordFailedAttempt($pdo, $keys) {
         $inWindow = $row && $now - $row['window_start'] < ATTEMPT_WINDOW;
         $failures = $inWindow ? $row['failures'] + 1 : 1;
         $windowStart = $inWindow ? $row['window_start'] : $now;
-        $locked = $failures >= $limits[$type];
+        $locked = $failures >= attemptLimit($type, $key);
         $save->execute([$key, $locked ? 0 : $failures, $locked ? $now : $windowStart, $locked ? $now + ATTEMPT_WINDOW : 0]);
         if ($locked && $type === 'email') $emailLocked = true;
     }
     return $emailLocked;
 }
 
+// After a success: everything counted against this email (and this IP's own
+// count for it) is forgiven. The IP's overall count is left to run out.
 function clearAttempts($pdo, $keys) {
-    $pdo->prepare('DELETE FROM auth_attempts WHERE attempt_key = ?')->execute([$keys['email']]);
+    $del = $pdo->prepare('DELETE FROM auth_attempts WHERE attempt_key = ?');
+    foreach (['email', 'pair'] as $type) {
+        if (isset($keys[$type])) $del->execute([$keys[$type]]);
+    }
 }
 
 // Counts sends (not failures) per key per ATTEMPT_WINDOW -- reuses the same
@@ -146,11 +170,21 @@ function handle_login($pdo) {
     $stmt = $pdo->prepare('SELECT id, password, email, frozen_at FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $user = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$user || !password_verify($password, $user['password'])) {
+    // An email with no account still costs one password hash, so how long
+    // the answer takes doesn't show which emails are registered.
+    $passwordOk = $user ? password_verify($password, $user['password'])
+        : (password_hash($password, PASSWORD_DEFAULT) && false);
+    if (!$passwordOk) {
         recordFailedAttempt($pdo, $keys);
         bad('Invalid email or password', 401);
     }
     clearAttempts($pdo, $keys);
+    // Hashes made with an older cost are brought up to the current one, which
+    // also keeps a real check and the stand-in above taking the same time.
+    if (password_needs_rehash($user['password'], PASSWORD_DEFAULT)) {
+        $pdo->prepare('UPDATE users SET password = ? WHERE id = ?')
+            ->execute([password_hash($password, PASSWORD_DEFAULT), $user['id']]);
+    }
     // Checked only after the password, so it can't be used to probe which
     // emails have accounts.
     if ($user['frozen_at'] !== null) {
@@ -279,30 +313,29 @@ function handle_sendOTP($pdo) {
     throttleSend($pdo, $k['email'], 3);   // 3 codes per address per 15 min
     throttleSend($pdo, $k['ip'], 10);     // 10 per IP per 15 min
 
+    // The answer is the same whether or not the email has an account, and
+    // the mail goes out after the response, so neither the words nor the
+    // time taken shows which emails are registered.
+    $answer = good(['message' => 'If that email has an account, a code is on its way. Check inbox/spam.']);
+
     $stmt = $pdo->prepare('SELECT id, email, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row) bad('No account found with this email', 404);
-
-    // reset_expires is set to time()+600 when a code is issued, so
-    // reset_expires-600 is the issue time -- block a second request inside
-    // 60s of the last one even though the per-address throttle above would
-    // also eventually catch repeated requests across the whole window.
-    if (($row['reset_expires'] ?? 0) - 600 > time() - 60) {
-        bad('Please wait a minute before requesting another code.', 429);
-    }
+    // No account: nothing is sent. A code issued (or entered) under a minute
+    // ago: no second one yet. reset_expires is the issue time plus 600.
+    if (!$row || ($row['reset_expires'] ?? 0) - 600 > time() - 60) respond($answer);
 
     $otp = sprintf("%06d", random_int(0, 999999));
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
     $stmt->execute([otpCodeHash($row['email'], $otp), time() + 600, $row['id']]);
 
-    $subject = tr('Your Simple Social Password Reset OTP');
+    $subject = mailSubject(tr('Your Simple Social Password Reset OTP'));
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
-    $headers = mailHeaders($message);
-
-    mail($row['email'], mailSubject($subject), $message, $headers)
-        ? respond(good(['message' => 'OTP sent to your email. Check inbox/spam.']))
-        : bad('Failed to send email. Try again or contact support.', 500);
+    $to = $row['email'];
+    defer(function () use ($to, $subject, $message) {
+        if (!mail($to, $subject, $message, mailHeaders($message))) logApiError('sendOTP', 'mail() failed');
+    });
+    respond($answer);
 }
 
 function handle_verifyOTP($pdo) {
@@ -310,18 +343,21 @@ function handle_verifyOTP($pdo) {
     $otp = trim($_POST['otp'] ?? '');
     $keys = attemptKeys('otp', $email);
     checkAttemptLimit($pdo, $keys);
-    if (!preg_match('/^\d{6}$/', $otp)) bad('Incorrect OTP', 400);
+    // One answer for every failure (no account, no code asked for, expired,
+    // wrong), counted the same way, so this can't be used to find out which
+    // emails have accounts either.
+    $wrong = 'Incorrect or expired code. Request a new one if you need to.';
+    if (!preg_match('/^\d{6}$/', $otp)) bad($wrong, 400);
 
     $stmt = $pdo->prepare('SELECT id, email, reset_otp, reset_expires FROM users WHERE LOWER(email) = LOWER(?)');
     $stmt->execute([$email]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$row || !$row['reset_otp']) bad('No OTP requested or expired', 400);
-    if (time() > $row['reset_expires']) bad('OTP has expired. Please request a new one.', 400);
-    if (!storedHashMatches($row['reset_otp'], otpCodeHash($row['email'], $otp))) {
-        if (recordFailedAttempt($pdo, $keys)) {
+    if (!$row || time() > $row['reset_expires']
+        || !storedHashMatches($row['reset_otp'], otpCodeHash($row['email'], $otp))) {
+        if (recordFailedAttempt($pdo, $keys) && $row) {
             $pdo->prepare('UPDATE users SET reset_otp = NULL, reset_expires = 0 WHERE id = ?')->execute([$row['id']]);
         }
-        bad('Incorrect OTP', 400);
+        bad($wrong, 400);
     }
     clearAttempts($pdo, $keys);
 
