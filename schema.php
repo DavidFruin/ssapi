@@ -53,6 +53,10 @@ function db() {
     $pdo->exec('PRAGMA journal_mode = WAL');
     $pdo->exec('PRAGMA synchronous = NORMAL');
     ensureSchema($pdo);
+    // Off by default in SQLite, and per connection. Switched on after the
+    // migrations, which may need to rebuild a table without tripping it.
+    // Only tables that declare foreign keys are affected (follows, so far).
+    $pdo->exec('PRAGMA foreign_keys = ON');
     return $pdo;
 }
 

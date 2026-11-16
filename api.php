@@ -609,6 +609,9 @@ logRequest($action, $_POST, $isPublic);
 
 $user = requireAuth($pdo, $PUBLIC_ENDPOINTS);
 
+// About one request in a hundred tidies up after it has answered.
+if (random_int(1, 100) === 1) defer(fn() => housekeeping($pdo));
+
 try {
     $handler = $HANDLERS[$action];
     $handler($pdo, $user);

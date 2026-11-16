@@ -32,19 +32,15 @@ function newInviteCode(): string {
     }
 }
 
-function deleteExpiredInvites($pdo): void {
-    $pdo->prepare('DELETE FROM invite_codes WHERE expires_at <= ?')->execute([date('Y-m-d H:i:s')]);
-}
-
 function isOwnerRow(array $row): bool {
     return ($row['role'] ?? 'user') === 'owner';
 }
 
 // The caller's live codes, newest first.
 function liveInviteCodes($pdo, int $userId): array {
-    deleteExpiredInvites($pdo);
-    $s = $pdo->prepare('SELECT code, expires_at FROM invite_codes WHERE created_by = ? ORDER BY created_at DESC, expires_at DESC');
-    $s->execute([$userId]);
+    // Expired codes are ignored here and removed later by housekeeping().
+    $s = $pdo->prepare('SELECT code, expires_at FROM invite_codes WHERE created_by = ? AND expires_at > ? ORDER BY created_at DESC, expires_at DESC');
+    $s->execute([$userId, date('Y-m-d H:i:s')]);
     return array_map(fn($r) => ['code' => $r['code'], 'expiresAt' => $r['expires_at']], $s->fetchAll(PDO::FETCH_ASSOC));
 }
 
@@ -114,10 +110,9 @@ function registrationNeedsInvite(): bool {
 function requireValidInvite($pdo, string $raw): array {
     $keys = ['ip' => attemptKeys('invite', '-')['ip']];
     checkAttemptLimit($pdo, $keys);
-    deleteExpiredInvites($pdo);
     $s = $pdo->prepare('SELECT i.code, i.created_by, i.expires_at, u.email AS inviter_email, u.role AS inviter_role
-        FROM invite_codes i JOIN users u ON u.id = i.created_by AND u.frozen_at IS NULL WHERE i.code = ?');
-    $s->execute([trim($raw)]);
+        FROM invite_codes i JOIN users u ON u.id = i.created_by AND u.frozen_at IS NULL WHERE i.code = ? AND i.expires_at > ?');
+    $s->execute([trim($raw), date('Y-m-d H:i:s')]);
     $row = $s->fetch(PDO::FETCH_ASSOC);
     if (!$row) {
         recordFailedAttempt($pdo, $keys);

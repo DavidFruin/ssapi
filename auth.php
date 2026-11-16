@@ -126,21 +126,19 @@ function deviceNameFromUserAgent($ua, $client = '') {
     return "$browser on $os";
 }
 
-// Deletes this user's dead rows. Called on login and refresh rather than
-// from cron: it costs one indexed DELETE on a request that's already
-// happening, and there's no scheduled-job infrastructure on the server to
-// hang a sweep off. A dormant account keeps a few dead rows, which is fine.
-function sessionSweep($pdo, $userId) {
-    $stmt = $pdo->prepare('DELETE FROM sessions WHERE user_id = ? AND (revoked_at IS NOT NULL OR expires_at < ?)');
-    $stmt->execute([$userId, date('Y-m-d H:i:s')]);
-
-    // Piggybacks on this per-login sweep rather than running on every
-    // request -- auth_attempts (S4's send-throttle counters included)
-    // otherwise grows forever. Not scoped to $userId: this clears stale
-    // rows for everyone, which is fine since it only touches rows whose
-    // window has already expired.
-    $cutoff = time() - ATTEMPT_WINDOW;
+// Clears out rows nothing will ever read again: sessions that were revoked
+// or ran out, attempt counters whose window has passed, expired invite codes,
+// and registrations abandoned over a day ago. Nothing depends on this having
+// run (every query that matters checks expiry itself); it only keeps the
+// tables small. api.php runs it after the response for about one request in
+// a hundred, so ordinary requests no longer pay for these writes.
+function housekeeping($pdo) {
+    $now = date('Y-m-d H:i:s');
+    $pdo->prepare('DELETE FROM sessions WHERE revoked_at IS NOT NULL OR expires_at < ?')->execute([$now]);
+    $cutoff = time() - 86400;   // the longest attempt window (reports: a day)
     $pdo->prepare('DELETE FROM auth_attempts WHERE window_start < ? AND locked_until < ?')->execute([$cutoff, $cutoff]);
+    $pdo->prepare('DELETE FROM invite_codes WHERE expires_at <= ?')->execute([$now]);
+    $pdo->prepare('DELETE FROM pending_users WHERE dateCreated < ?')->execute([$cutoff]);
 }
 
 // Keeps a user under the session cap by revoking least-recently-used
@@ -172,7 +170,6 @@ function sessionCreate($pdo, $userId) {
     $accessTtl = $CONFIG['session_access_ttl'] ?? 86400;
     $refreshTtl = $CONFIG['session_refresh_ttl'] ?? 2592000;
 
-    sessionSweep($pdo, $userId);
     sessionEnforceCap($pdo, $userId);
 
     $sessionId = bin2hex(random_bytes(16));
@@ -312,8 +309,6 @@ function sessionRefresh($pdo, $refreshToken) {
         $stmt = $pdo->prepare('UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?');
         $stmt->execute([$now, $expires, $session['id']]);
     }
-
-    sessionSweep($pdo, $session['user_id']);
 
     return [
         'jwt' => jwtEncode([
