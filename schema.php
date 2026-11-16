@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -162,6 +162,7 @@ function ensureSchema($pdo) {
         if ($v < 7) migration7($pdo);
         if ($v < 8) migration8($pdo);
         if ($v < 9) migration9($pdo);
+        if ($v < 10) migration10($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
@@ -176,6 +177,41 @@ function addColumns($pdo, $table, array $columns) {
     $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
     foreach ($columns as $col => $type) {
         if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
+    }
+}
+
+// Follows as a table (review F2). They used to be a JSON list inside each
+// user's row, so "who follows X" meant reading and decoding every user, and
+// two people following at the same moment could overwrite each other. The
+// old lists are copied in once (only into an empty table, so running this
+// again can't bring back a follow someone has since removed); entries that
+// point at a deleted account or at the user themselves are left behind.
+// created_at is NULL for the oldest entries, which never had a time.
+// users.follows itself is left alone and no longer read.
+function migration10($pdo) {
+    $pdo->exec('CREATE TABLE IF NOT EXISTS follows (
+        follower_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        followed_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        created_at TEXT,
+        PRIMARY KEY (follower_id, followed_id))');
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_follows_followed ON follows(followed_id)');
+
+    $userCols = array_column($pdo->query('PRAGMA table_info(users)')->fetchAll(PDO::FETCH_ASSOC), 'name');
+    if (!in_array('follows', $userCols, true)) return;
+    if ((int)$pdo->query('SELECT COUNT(*) FROM follows')->fetchColumn() > 0) return;
+
+    $exists = array_flip($pdo->query('SELECT id FROM users')->fetchAll(PDO::FETCH_COLUMN));
+    $rows = $pdo->query("SELECT id, follows FROM users WHERE follows IS NOT NULL AND follows NOT IN ('', '[]')")->fetchAll(PDO::FETCH_ASSOC);
+    $insert = $pdo->prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?)');
+    foreach ($rows as $row) {
+        $list = json_decode((string)$row['follows'], true);
+        if (!is_array($list)) continue;
+        foreach ($list as $entry) {
+            $followedId = (int)(is_array($entry) ? ($entry['id'] ?? 0) : $entry);
+            if ($followedId <= 0 || $followedId === (int)$row['id'] || !isset($exists[$followedId])) continue;
+            $time = is_array($entry) && is_string($entry['timestamp'] ?? null) ? $entry['timestamp'] : null;
+            $insert->execute([(int)$row['id'], $followedId, $time]);
+        }
     }
 }
 

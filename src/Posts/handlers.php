@@ -71,15 +71,11 @@ function truncatePreview($text) {
 }
 
 // ============== POST HELPERS (posts/post_likes tables) ==============
-// Likes used to live inside each post's JSON, as `likes: [{userId, timestamp}]`.
-// Handlers below still hand clients that exact shape -- these two functions
-// are what rebuilds it from the real post_likes table.
 
-// One query for a whole page of posts, not one query per post. Grouped by
-// post id, ordered oldest-first like the old JSON array naturally was
-// (likes were always appended, never reordered).
-// With $viewerId, likes from users hidden from the viewer (blocked either
-// way, or frozen) are left out.
+// Every like on the given posts as [postId => [{userId, timestamp}, ...]],
+// oldest first, in one query. With $viewerId, likes from users hidden from
+// the viewer (blocked either way, or frozen) are left out. This is the list
+// someone sees when they open a post's likes (getPostLikes).
 function getLikesForPostIds($pdo, $postIds, $viewerId = null) {
     if (empty($postIds)) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
@@ -91,6 +87,34 @@ function getLikesForPostIds($pdo, $postIds, $viewerId = null) {
         $byPost[$row['post_id']][] = ['userId' => (int)$row['user_id'], 'timestamp' => $row['created_at']];
     }
     return $byPost;
+}
+
+// What a post carries about its likes: [postId => [likeCount, likedByMe]],
+// counted in SQL, with the same hidden-user rule as above. Apps older than
+// API version 2 read the whole list off every post instead, so for them the
+// list is fetched and sent as 'likes' as well.
+function likeInfoForPostIds($pdo, $postIds, $viewerId) {
+    if (empty($postIds)) return [];
+    $info = [];
+    if (clientApiVersion() < 2) {
+        foreach (getLikesForPostIds($pdo, $postIds, $viewerId) as $postId => $likes) {
+            $info[$postId] = [
+                'likeCount' => count($likes),
+                'likedByMe' => in_array((int)$viewerId, array_column($likes, 'userId'), true),
+                'likes' => $likes,
+            ];
+        }
+        return $info;
+    }
+    $placeholders = implode(',', array_fill(0, count($postIds), '?'));
+    [$hf, $hp] = hiddenFilter($pdo, $viewerId, 'user_id');
+    $stmt = $pdo->prepare("SELECT post_id, COUNT(*) AS n, MAX(user_id = ?) AS mine FROM post_likes
+        WHERE post_id IN ($placeholders)$hf GROUP BY post_id");
+    $stmt->execute(array_merge([(int)$viewerId], array_values($postIds), $hp));
+    foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
+        $info[$row['post_id']] = ['likeCount' => (int)$row['n'], 'likedByMe' => (bool)$row['mine']];
+    }
+    return $info;
 }
 
 // Columns to select (with POST_MEDIA_JOIN) so postRowToApi can describe the
@@ -121,49 +145,67 @@ function postMediaToApi($row) {
     ];
 }
 
-// A posts-table row, in the shape handlers have always returned. Callers
-// still add userID/userEmail/mentions themselves, same as before. mediaUrl
-// stays for older clients (CLI/TUI, older app builds); media is the richer
-// description newer clients use.
-function postRowToApi($row, $likesByPost) {
+// A posts row (selected with users.email and the media columns) as the API
+// returns it. $likeInfo comes from likeInfoForPostIds(). mediaUrl stays for
+// older clients (CLI/TUI, older app builds); media is the richer description
+// newer clients use. A frozen post is only ever sent to its author
+// (frozenFilter): flagged, and with no likes or comments while it is hidden.
+function postRowToApi($row, $likeInfo, $commentCounts = []) {
+    $frozen = !empty($row['frozen_at']);
+    $likes = $frozen ? [] : ($likeInfo[$row['id']] ?? []);
     $post = [
         'id' => $row['id'],
         'text' => $row['text'],
         'timestamp' => $row['created_at'],
-        'likes' => $likesByPost[$row['id']] ?? [],
+        'likeCount' => $likes['likeCount'] ?? 0,
+        'likedByMe' => $likes['likedByMe'] ?? false,
         'mediaUrl' => $row['media_url'],
         'media' => postMediaToApi($row),
+        'userID' => (int)$row['user_id'],
+        'userEmail' => $row['email'] ?? ('User ' . $row['user_id']),
+        'commentCount' => $frozen ? 0 : ($commentCounts[$row['id']] ?? 0),
     ];
-    // Only the author is ever sent a frozen post (frozenFilter): flagged, and
-    // with no likes while it is hidden. Callers zero commentCount themselves.
-    if (!empty($row['frozen_at'])) {
-        $post['frozen'] = true;
-        $post['likes'] = [];
-    }
+    if (clientApiVersion() < 2) $post['likes'] = $likes['likes'] ?? [];
+    if ($frozen) $post['frozen'] = true;
     return $post;
 }
+
+// Everything a list of posts needs, in one query each for the whole list
+// rather than per post: likes, mentions, comment counts, the viewer's reports.
+function postRowsToApi($pdo, array $rows, $viewerId) {
+    $ids = array_column($rows, 'id');
+    $likeInfo = likeInfoForPostIds($pdo, $ids, $viewerId);
+    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
+    $commentCounts = getCommentCountsForPostIds($pdo, $ids, $viewerId);
+    $reported = reportedByViewer($pdo, $viewerId, 'post');
+    $posts = [];
+    foreach ($rows as $i => $row) {
+        $post = postRowToApi($row, $likeInfo, $commentCounts);
+        $post['mentions'] = $mentions[$i];
+        $post['reportedByMe'] = in_array((string)$row['id'], $reported, true);
+        $posts[] = $post;
+    }
+    return $posts;
+}
+
+const POST_SELECT = 'SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, '
+    . POST_MEDIA_COLUMNS . ' FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN;
 
 function handle_getPostById($pdo, $user) {
     $postId = trim($_POST['postId'] ?? '');
     if (!$postId) bad('Post ID required', 400);
 
-    // LEFT, not inner: a post whose owner row is somehow gone should still
-    // render (same fallback as before, just folded into one query) rather
-    // than 404 as if the post itself didn't exist.
-    $stmt = $pdo->prepare('SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, ' . POST_MEDIA_COLUMNS . '
-        FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN . ' WHERE posts.id = ?');
+    // POST_SELECT joins users with LEFT, not inner: a post whose owner row is
+    // somehow gone should still render rather than 404 as if the post itself
+    // didn't exist.
+    $stmt = $pdo->prepare(POST_SELECT . ' WHERE posts.id = ?');
     $stmt->execute([$postId]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$row || isHiddenFrom($pdo, $user['sub'], $row['user_id'])) bad('Post not found', 404);
     if ($row['frozen_at'] !== null && (int)$row['user_id'] !== (int)$user['sub']) bad('Post not found', 404);
 
-    $post = postRowToApi($row, getLikesForPostIds($pdo, [$postId], $user['sub']));
-    $post['userID'] = (int)$row['user_id'];
-    $post['userEmail'] = $row['email'] ?: '';
-    $post['mentions'] = hydrateMentions($pdo, $post['text']);
-    $post['commentCount'] = !empty($post['frozen']) ? 0 : (getCommentCountsForPostIds($pdo, [$postId], $user['sub'])[$postId] ?? 0);
-    $post['reportedByMe'] = isReportedBy($pdo, $user['sub'], 'post', $postId);
-    respond(good(['post' => $post]));
+    $row['email'] = $row['email'] ?: '';
+    respond(good(['post' => postRowsToApi($pdo, [$row], $user['sub'])[0]]));
 }
 
 function handle_getPostPreviews($pdo, $user) {
@@ -254,112 +296,74 @@ function handle_post($pdo, $user) {
     respond(good(['postId' => $postId]));
 }
 
-// Shared by handle_getMyPosts and handle_getUserPosts (C4) -- the two were
-// identical except where the target id/email came from (the caller's own
-// $user vs. a looked-up $_POST['userId']). getMyPosts passes $user['email']
-// straight through rather than looking its own email up again, which a
-// literal "getMyPosts just calls getUserPosts with userId=$user['sub']"
-// dedup would have reintroduced -- exactly the redundant-query class P9
-// just removed elsewhere.
-function fetchPostsPageForUser($pdo, $viewerId, $targetId, $targetEmail, $limit, $offset) {
+// One page of the posts written by $authorIds, newest first, for getMyPosts,
+// getUserPosts and the feed.
+//
+// Where the page starts: beforeTimestamp + beforeId (the 'timestamp' and
+// 'id' of the last post the app already has), or offset for apps that page
+// that way. "Before this post" costs the same however far down someone has
+// scrolled, and a new post arriving meanwhile can't shift the page and repeat
+// a post, both of which offset suffers from.
+//
+// One row more than asked for is fetched to learn whether there's another
+// page, in place of a COUNT(*) on every page. Apps older than API version 2
+// still get totalCount (the terminal clients print it).
+function fetchPostsPage($pdo, $viewerId, array $authorIds) {
+    [$limit, $offset] = pageParams();
+    $placeholders = implode(',', array_fill(0, count($authorIds), '?'));
     [$ff, $fp] = frozenFilter('posts', $viewerId);
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE posts.user_id = ?$ff");
-    $countStmt->execute(array_merge([$targetId], $fp));
-    $totalCount = (int)$countStmt->fetchColumn();
+    $where = "posts.user_id IN ($placeholders)$ff";
+    $params = array_merge($authorIds, $fp);
 
-    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, " . POST_MEDIA_COLUMNS . "
-        FROM posts " . POST_MEDIA_JOIN . " WHERE posts.user_id = ?$ff ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
-    $stmt->execute(array_merge([$targetId], $fp));
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $viewerId);
-    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
-    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'), $viewerId);
-    $reported = reportedByViewer($pdo, $viewerId, 'post');
-    $posts = [];
-    foreach ($rows as $i => $row) {
-        $post = postRowToApi($row, $likesByPost);
-        $post['userID'] = $targetId;
-        $post['userEmail'] = $targetEmail;
-        $post['mentions'] = $mentions[$i];
-        $post['commentCount'] = !empty($post['frozen']) ? 0 : ($commentCounts[$row['id']] ?? 0);
-        $post['reportedByMe'] = in_array((string)$row['id'], $reported, true);
-        $posts[] = $post;
+    $cursor = '';
+    $cursorParams = [];
+    $beforeTime = trim((string)($_POST['beforeTimestamp'] ?? ''));
+    $beforeId = trim((string)($_POST['beforeId'] ?? ''));
+    if ($beforeTime !== '' && $beforeId !== '') {
+        $cursor = ' AND (posts.created_at < ? OR (posts.created_at = ? AND posts.id < ?))';
+        $cursorParams = [$beforeTime, $beforeTime, $beforeId];
+        $offset = 0;
     }
-    $hasMore = ($offset + $limit) < $totalCount;
 
-    return ['posts' => $posts, 'hasMore' => $hasMore, 'totalCount' => $totalCount];
+    $stmt = $pdo->prepare(POST_SELECT . " WHERE $where$cursor
+        ORDER BY posts.created_at DESC, posts.id DESC LIMIT " . ($limit + 1) . " OFFSET $offset");
+    $stmt->execute(array_merge($params, $cursorParams));
+    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
+    $hasMore = count($rows) > $limit;
+    if ($hasMore) array_pop($rows);
+
+    $page = ['posts' => postRowsToApi($pdo, $rows, $viewerId), 'hasMore' => $hasMore];
+    if (clientApiVersion() < 2) {
+        $count = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE $where");
+        $count->execute($params);
+        $page['totalCount'] = (int)$count->fetchColumn();
+    }
+    return $page;
 }
 
 function handle_getMyPosts($pdo, $user) {
-    [$limit, $offset] = pageParams();
-    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $user['sub'], $user['email'], $limit, $offset)));
+    respond(good(fetchPostsPage($pdo, $user['sub'], [(int)$user['sub']])));
 }
 
 function handle_getUserPosts($pdo, $user) {
     $targetId = (int)($_POST['userId'] ?? 0);
     if ($targetId <= 0) bad('Invalid user ID', 400);
     if (isHiddenFrom($pdo, $user['sub'], $targetId)) bad('User not found', 404);
-
-    [$limit, $offset] = pageParams();
-
-    $emailStmt = $pdo->prepare('SELECT email FROM users WHERE id = ?');
-    $emailStmt->execute([$targetId]);
-    $targetEmail = $emailStmt->fetchColumn() ?: 'User ' . $targetId;
-
-    respond(good(fetchPostsPageForUser($pdo, $user['sub'], $targetId, $targetEmail, $limit, $offset)));
+    respond(good(fetchPostsPage($pdo, $user['sub'], [$targetId])));
 }
 
+// The feed: the viewer's own posts and those of everyone they follow. Hidden
+// users (blocked either way, or frozen) are dropped from the list of authors
+// itself, which keeps the query on the posts index instead of adding a NOT IN.
 function handle_fetchFollowedPosts($pdo, $user) {
-    [$limit, $offset] = pageParams();
-    $uid = $user['sub'];
-
-    $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
+    $uid = (int)$user['sub'];
+    $stmt = $pdo->prepare('SELECT followed_id FROM follows WHERE follower_id = ?');
     $stmt->execute([$uid]);
-    $followsJson = $stmt->fetchColumn() ?: '[]';
-    $followedData = json_decode($followsJson, true) ?? [];
-
-    // Always includes $uid, so this is never empty and the IN (...) below
-    // always has at least one placeholder. Hidden users (blocked either way,
-    // or frozen) are dropped from the list itself, which keeps the query on
-    // the posts index instead of adding a NOT IN.
-    $followedIds = array_values(array_unique(array_merge(array_map(fn($f) => (int)(is_array($f) ? $f['id'] : $f), $followedData), [(int)$uid])));
-    $followedIds = array_values(array_diff($followedIds, hiddenUserIds($pdo, $uid)));
-    if (!$followedIds) $followedIds = [(int)$uid];
-    $placeholders = implode(',', array_fill(0, count($followedIds), '?'));
-
-    [$ff, $fp] = frozenFilter('posts', $uid);
-    $countStmt = $pdo->prepare("SELECT COUNT(*) FROM posts WHERE user_id IN ($placeholders)$ff");
-    $countStmt->execute(array_merge($followedIds, $fp));
-    $totalCount = (int)$countStmt->fetchColumn();
-
-    // One query across every followed user, ordered and paged in SQL,
-    // instead of pulling each user's whole post list into PHP to merge and
-    // sort by hand.
-    $stmt = $pdo->prepare("SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, " . POST_MEDIA_COLUMNS . "
-        FROM posts JOIN users ON users.id = posts.user_id " . POST_MEDIA_JOIN . "
-        WHERE posts.user_id IN ($placeholders)$ff
-        ORDER BY posts.created_at DESC LIMIT $limit OFFSET $offset");
-    $stmt->execute(array_merge($followedIds, $fp));
-    $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-
-    $likesByPost = getLikesForPostIds($pdo, array_column($rows, 'id'), $uid);
-    $mentions = hydrateMentionsBatch($pdo, array_column($rows, 'text'));
-    $commentCounts = getCommentCountsForPostIds($pdo, array_column($rows, 'id'), $uid);
-    $reported = reportedByViewer($pdo, $uid, 'post');
-    $allPosts = [];
-    foreach ($rows as $i => $row) {
-        $post = postRowToApi($row, $likesByPost);
-        $post['userID'] = (int)$row['user_id'];
-        $post['userEmail'] = $row['email'];
-        $post['mentions'] = $mentions[$i];
-        $post['commentCount'] = !empty($post['frozen']) ? 0 : ($commentCounts[$row['id']] ?? 0);
-        $post['reportedByMe'] = in_array((string)$row['id'], $reported, true);
-        $allPosts[] = $post;
-    }
-    $hasMore = ($offset + $limit) < $totalCount;
-
-    respond(good(['posts' => $allPosts, 'hasMore' => $hasMore, 'totalCount' => $totalCount]));
+    $authorIds = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+    $authorIds[] = $uid;
+    $authorIds = array_values(array_diff(array_unique($authorIds), hiddenUserIds($pdo, $uid)));
+    if (!$authorIds) $authorIds = [$uid];
+    respond(good(fetchPostsPage($pdo, $uid, $authorIds)));
 }
 
 function handle_likePost($pdo, $user) {

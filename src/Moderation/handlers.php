@@ -120,19 +120,6 @@ function handle_reportContent($pdo, $user) {
     respond(good());
 }
 
-// Removes $removeId from $userId's users.follows JSON list. Follows aren't a
-// table yet, so this is the same decode/filter/re-encode the Follows module
-// does.
-function removeFollow($pdo, $userId, $removeId) {
-    $stmt = $pdo->prepare('SELECT follows FROM users WHERE id = ?');
-    $stmt->execute([$userId]);
-    $follows = json_decode($stmt->fetchColumn() ?: '[]', true) ?? [];
-    $kept = array_values(array_filter($follows, fn($f) => (is_array($f) ? $f['id'] : $f) != $removeId));
-    if (count($kept) < count($follows)) {
-        $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?')->execute([json_encode($kept), $userId]);
-    }
-}
-
 // Two-way invisibility: neither user sees the other's posts, comments, likes
 // or profile, and neither can follow, comment on or notify the other (the
 // visibility filter does that part). Here: the block row, follows in both
@@ -152,8 +139,8 @@ function handle_blockUser($pdo, $user) {
     try {
         $pdo->prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?, ?, ?)')
             ->execute([$uid, $targetId, date('Y-m-d H:i:s')]);
-        removeFollow($pdo, $uid, $targetId);
-        removeFollow($pdo, $targetId, $uid);
+        $pdo->prepare('DELETE FROM follows WHERE (follower_id = ? AND followed_id = ?) OR (follower_id = ? AND followed_id = ?)')
+            ->execute([$uid, $targetId, $targetId, $uid]);
         $pdo->prepare('DELETE FROM notifications WHERE (recipient_id = ? AND actor_id = ?) OR (recipient_id = ? AND actor_id = ?)')
             ->execute([$uid, $targetId, $targetId, $uid]);
         $pdo->exec('COMMIT');

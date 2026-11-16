@@ -494,16 +494,7 @@ function deleteUserAndData($pdo, int $uid): void {
         $pdo->prepare("DELETE FROM notifications WHERE recipient_id = ? OR actor_id = ?$postIdFilter")
             ->execute($notifParams);
 
-        $stmt = $pdo->prepare('SELECT id, follows FROM users WHERE id != ?');
-        $stmt->execute([$uid]);
-        while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-            $follows = $row['follows'] ? json_decode($row['follows'], true) : [];
-            if (is_array($follows)) {
-                $updated = array_filter($follows, fn($f) => (is_array($f) ? $f['id'] : $f) != $uid);
-                $pdo->prepare('UPDATE users SET follows = ? WHERE id = ?')
-                    ->execute([json_encode(array_values($updated)), $row['id']]);
-            }
-        }
+        $pdo->prepare('DELETE FROM follows WHERE follower_id = ? OR followed_id = ?')->execute([$uid, $uid]);
 
         // This user's own posts, and every like anyone gave them; plus
         // every like this user gave out on someone else's post.
