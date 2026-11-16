@@ -262,7 +262,7 @@ function handle_refreshToken($pdo) {
 // point of hashing it is that not even this endpoint can hand it back.
 function handle_getSessions($pdo, $user) {
     global $CONFIG;
-    $stmt = $pdo->prepare('SELECT id, device_name, created_at, last_used_at
+    $stmt = $pdo->prepare('SELECT id, device_name, created_at, created_tz, last_used_at
         FROM sessions
         WHERE user_id = ? AND revoked_at IS NULL AND expires_at >= ?
         ORDER BY COALESCE(last_used_at, created_at) DESC');
@@ -274,6 +274,7 @@ function handle_getSessions($pdo, $user) {
             'id' => $row['id'],
             'deviceName' => $row['device_name'] ?: 'Unknown device',
             'createdAt' => $row['created_at'],
+            'createdTz' => $row['created_tz'],
             'lastUsedAt' => $row['last_used_at'],
             'isCurrent' => $row['id'] === $user['sid'],
         ];
@@ -533,8 +534,8 @@ function handle_finishRegister($pdo) {
         // Standard single-quoted SQL string literals, not SQLite's legacy
         // double-quoted-identifier-as-string fallback -- a build compiled
         // without that fallback would reject this INSERT outright.
-        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending)
-            VALUES (?, ?, '[]', '[]', '[]', '', ?, ?, ?)")->execute([$email, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0]);
+        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending, created_tz)
+            VALUES (?, ?, '[]', '[]', '[]', '', ?, ?, ?, ?)")->execute([$email, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0, clientTzOffset()]);
         $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {

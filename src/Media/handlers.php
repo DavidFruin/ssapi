@@ -986,8 +986,8 @@ function handle_uploadMedia() {
     $pdo->exec('BEGIN IMMEDIATE');
     try {
         $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
-        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, "loop") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath, empty($classified['loop']) ? 0 : 1]);
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, "loop", created_tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath, empty($classified['loop']) ? 0 : 1, clientTzOffset()]);
         $mediaId = $pdo->lastInsertId();
         $moved = [];
         foreach ($moves as $from => $to) {

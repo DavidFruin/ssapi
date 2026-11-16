@@ -50,10 +50,10 @@ function handle_getUserEmails($pdo, $user) {
 
 function handle_getMyInfo($pdo, $user) {
     global $CONFIG;
-    $stmt = $pdo->prepare('SELECT id, email, created_at, theme, hand, role, terms_version_accepted, lang FROM users WHERE id = ?');
+    $stmt = $pdo->prepare('SELECT id, email, created_at, created_tz, theme, hand, role, terms_version_accepted, lang FROM users WHERE id = ?');
     $stmt->execute([$user['sub']]);
     $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right',
+    respond(good(['id' => $user['sub'], 'userId' => $user['sub'], 'email' => $row['email'] ?? 'User', 'created_at' => $row['created_at'] ?? 'Unknown', 'created_tz' => $row['created_tz'] ?? null, 'theme' => $row['theme'] ?: 'light', 'hand' => $row['hand'] ?: 'right',
         'lang' => $row['lang'] ?? null,
         // Staff roles plan: role is public; isAdmin stays for older app builds
         // (true for admin and owner).

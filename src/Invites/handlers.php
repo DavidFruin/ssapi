@@ -76,13 +76,13 @@ function handle_generateInviteCode($pdo, $user) {
     $now = time();
     $created = date('Y-m-d H:i:s', $now);
     $expires = date('Y-m-d H:i:s', $now + INVITE_DAYS * 86400);
-    $ins = $pdo->prepare('INSERT INTO invite_codes (code, created_by, created_at, expires_at) VALUES (?, ?, ?, ?)');
+    $ins = $pdo->prepare('INSERT INTO invite_codes (code, created_by, created_at, expires_at, created_tz) VALUES (?, ?, ?, ?, ?)');
     // A collision on the primary key is astronomically unlikely, but retrying
     // is free.
     for ($attempt = 0; $attempt < 5; $attempt++) {
         $code = newInviteCode();
         try {
-            $ins->execute([$code, $uid, $created, $expires]);
+            $ins->execute([$code, $uid, $created, $expires, clientTzOffset()]);
             respond(good(['code' => $code, 'expiresAt' => $expires]));
         } catch (PDOException $e) {
             if ($attempt === 4) throw $e;

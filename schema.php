@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -167,6 +167,7 @@ function ensureSchema($pdo) {
         if ($v < 8) migration8($pdo);
         if ($v < 9) migration9($pdo);
         if ($v < 10) migration10($pdo);
+        if ($v < 11) migration11($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
@@ -182,6 +183,63 @@ function addColumns($pdo, $table, array $columns) {
     foreach ($columns as $col => $type) {
         if (!in_array($col, $have, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN \"$col\" $type");
     }
+}
+
+// Times in UTC, each with the creator's offset from GMT (review S8).
+//
+// 1. created_tz: "+HH:MM"/"-HH:MM", the offset of the device of the person who
+//    created the row (clientTzOffset). NULL for rows from before this, and when
+//    an app doesn't send one.
+// 2. Every stored "YYYY-MM-DD HH:MM:SS" time so far was written in the host's
+//    PHP time zone ($CONFIG['legacy_timezone']); each is converted to UTC.
+//    Each column is rewritten in one UPDATE from a mapping of old to new
+//    values, so a converted value can never be converted a second time.
+//    Unix-second columns (pending_users.dateCreated, auth_attempts, rotated_at)
+//    were never zoned and are left alone.
+const TIMESTAMP_COLUMNS = [
+    'users' => ['created_at', 'last_notifications_seen_at', 'frozen_at', 'terms_accepted_at', 'invite_used_at'],
+    'posts' => ['created_at', 'frozen_at'],
+    'comments' => ['created_at', 'deleted_at', 'frozen_at'],
+    'post_likes' => ['created_at'],
+    'follows' => ['created_at'],
+    'notifications' => ['created_at'],
+    'blocks' => ['created_at'],
+    'reports' => ['created_at', 'resolved_at'],
+    'media' => ['created_at'],
+    'sessions' => ['created_at', 'last_used_at', 'expires_at', 'revoked_at'],
+    'invite_codes' => ['created_at', 'expires_at'],
+    'staff_actions' => ['created_at'],
+    'push_subscriptions' => ['created_at'],
+];
+
+function migration11($pdo) {
+    global $CONFIG;
+    // The conversion below must happen exactly once. created_tz arriving is
+    // the marker: if posts already has it, this already ran.
+    $converted = in_array('created_tz', array_column($pdo->query('PRAGMA table_info(posts)')->fetchAll(PDO::FETCH_ASSOC), 'name'), true);
+    foreach (['users', 'posts', 'comments', 'post_likes', 'follows', 'notifications', 'blocks', 'reports', 'media', 'sessions', 'invite_codes', 'staff_actions'] as $table) addColumns($pdo, $table, ['created_tz' => 'TEXT']);
+
+    $from = new DateTimeZone($CONFIG['legacy_timezone'] ?? 'UTC');
+    $utc = new DateTimeZone('UTC');
+    if ($converted || $from->getName() === $utc->getName() || in_array($from->getName(), ['Etc/UTC', 'UTC', 'Etc/GMT', 'GMT'], true)) return;
+
+    $pdo->exec('CREATE TEMP TABLE IF NOT EXISTS ts_map (old TEXT PRIMARY KEY, new TEXT NOT NULL)');
+    foreach (TIMESTAMP_COLUMNS as $table => $columns) {
+        $have = array_column($pdo->query("PRAGMA table_info($table)")->fetchAll(PDO::FETCH_ASSOC), 'name');
+        foreach ($columns as $col) {
+            if (!in_array($col, $have, true)) continue;
+            $pdo->exec('DELETE FROM ts_map');
+            $ins = $pdo->prepare('INSERT INTO ts_map (old, new) VALUES (?, ?)');
+            foreach ($pdo->query("SELECT DISTINCT \"$col\" FROM $table WHERE \"$col\" IS NOT NULL")->fetchAll(PDO::FETCH_COLUMN) as $old) {
+                if (!is_string($old) || !preg_match('/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/', $old)) continue;
+                $when = DateTime::createFromFormat('Y-m-d H:i:s', $old, $from);
+                if ($when) $ins->execute([$old, $when->setTimezone($utc)->format('Y-m-d H:i:s')]);
+            }
+            $pdo->exec("UPDATE $table SET \"$col\" = (SELECT new FROM ts_map WHERE old = $table.\"$col\")
+                WHERE \"$col\" IN (SELECT old FROM ts_map)");
+        }
+    }
+    $pdo->exec('DROP TABLE ts_map');
 }
 
 // Follows as a table (review F2). They used to be a JSON list inside each

@@ -80,11 +80,11 @@ function getLikesForPostIds($pdo, $postIds, $viewerId = null) {
     if (empty($postIds)) return [];
     $placeholders = implode(',', array_fill(0, count($postIds), '?'));
     [$hf, $hp] = $viewerId ? hiddenFilter($pdo, $viewerId, 'user_id') : ['', []];
-    $stmt = $pdo->prepare("SELECT post_id, user_id, created_at FROM post_likes WHERE post_id IN ($placeholders)$hf ORDER BY created_at ASC");
+    $stmt = $pdo->prepare("SELECT post_id, user_id, created_at, created_tz FROM post_likes WHERE post_id IN ($placeholders)$hf ORDER BY created_at ASC");
     $stmt->execute(array_merge(array_values($postIds), $hp));
     $byPost = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
-        $byPost[$row['post_id']][] = ['userId' => (int)$row['user_id'], 'timestamp' => $row['created_at']];
+        $byPost[$row['post_id']][] = ['userId' => (int)$row['user_id'], 'timestamp' => $row['created_at'], 'timestampTz' => $row['created_tz']];
     }
     return $byPost;
 }
@@ -157,6 +157,7 @@ function postRowToApi($row, $likeInfo, $commentCounts = []) {
         'id' => $row['id'],
         'text' => $row['text'],
         'timestamp' => $row['created_at'],
+        'timestampTz' => $row['created_tz'] ?? null,
         'likeCount' => $likes['likeCount'] ?? 0,
         'likedByMe' => $likes['likedByMe'] ?? false,
         'mediaUrl' => $row['media_url'],
@@ -188,7 +189,7 @@ function postRowsToApi($pdo, array $rows, $viewerId) {
     return $posts;
 }
 
-const POST_SELECT = 'SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.frozen_at, users.email, '
+const POST_SELECT = 'SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.created_tz, posts.frozen_at, users.email, '
     . POST_MEDIA_COLUMNS . ' FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN;
 
 function handle_getPostById($pdo, $user) {
@@ -279,8 +280,8 @@ function handle_post($pdo, $user) {
             // "General error: 21 bad parameter or other API misuse" state
             // after a constraint violation, so re-executing the same
             // PDOStatement on the next loop fails even with fresh values.
-            $insert = $pdo->prepare('INSERT INTO posts (id, user_id, text, media_url, created_at) VALUES (?, ?, ?, ?, ?)');
-            $insert->execute([$postId, $uid, $text, $rawMedia, $createdAt]);
+            $insert = $pdo->prepare('INSERT INTO posts (id, user_id, text, media_url, created_at, created_tz) VALUES (?, ?, ?, ?, ?, ?)');
+            $insert->execute([$postId, $uid, $text, $rawMedia, $createdAt, clientTzOffset()]);
             break;
         } catch (PDOException $e) {
             if ($e->getCode() !== '23000') throw $e; // not a uniqueness failure
@@ -384,8 +385,8 @@ function handle_likePost($pdo, $user) {
 
     $actorEmail = $user['email'];
 
-    $insert = $pdo->prepare('INSERT OR IGNORE INTO post_likes (post_id, user_id, created_at) VALUES (?, ?, ?)');
-    $insert->execute([$postId, $user['sub'], date('Y-m-d H:i:s')]);
+    $insert = $pdo->prepare('INSERT OR IGNORE INTO post_likes (post_id, user_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
+    $insert->execute([$postId, $user['sub'], date('Y-m-d H:i:s'), clientTzOffset()]);
     if ($insert->rowCount() > 0) {
         createNotification($pdo, $realOwnerId, $user['sub'], $actorEmail, 'like', $postId);
     }

@@ -80,6 +80,18 @@ function clientApiVersion() {
     return max(1, (int)($_SERVER['HTTP_X_SS_API'] ?? 1));
 }
 
+// The offset from GMT of the person making this request, as "+HH:MM" or
+// "-HH:MM" (X-SS-TZ, sent by the apps from the device's clock). Stored next to
+// every time a person creates something, so it's known what local time it was
+// for them. null when the app didn't send one (older builds) or sent nonsense.
+function clientTzOffset(): ?string {
+    $tz = trim((string)($_SERVER['HTTP_X_SS_TZ'] ?? ''));
+    if (!preg_match('/^([+-])(\d{2}):(\d{2})$/', $tz, $m)) return null;
+    $minutes = (int)$m[2] * 60 + (int)$m[3];
+    if ($minutes > 14 * 60 || (int)$m[3] % 15 !== 0) return null;
+    return $minutes === 0 ? '+00:00' : $tz;
+}
+
 // ============== SESSIONS ==============
 
 function refreshTokenHash($token) {
@@ -178,12 +190,12 @@ function sessionCreate($pdo, $userId) {
     $ua = substr((string)($_SERVER['HTTP_USER_AGENT'] ?? ''), 0, 512);
 
     $stmt = $pdo->prepare('INSERT INTO sessions
-        (id, user_id, refresh_hash, created_at, last_used_at, expires_at, revoked_at, device_name, user_agent)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)');
+        (id, user_id, refresh_hash, created_at, last_used_at, expires_at, revoked_at, device_name, user_agent, created_tz)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)');
     $stmt->execute([
         $sessionId, $userId, refreshTokenHash($refreshToken), $now, $now,
         date('Y-m-d H:i:s', time() + $refreshTtl),
-        deviceNameFromUserAgent($ua, $_SERVER['HTTP_X_CLIENT'] ?? ''), $ua,
+        deviceNameFromUserAgent($ua, $_SERVER['HTTP_X_CLIENT'] ?? ''), $ua, clientTzOffset(),
     ]);
 
     return [

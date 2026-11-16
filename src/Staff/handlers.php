@@ -47,10 +47,10 @@ function requireOutranks(array $me, ?array $target): void {
 // One row in the activity log. $details is stored as JSON. Emails are copied
 // in so the log stays readable after an account is deleted.
 function logStaffAction($pdo, array $me, string $action, ?array $target, array $details = []): void {
-    $pdo->prepare('INSERT INTO staff_actions (actor_id, actor_email, action, target_user_id, target_email, details, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)')
+    $pdo->prepare('INSERT INTO staff_actions (actor_id, actor_email, action, target_user_id, target_email, details, created_at, created_tz)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
         ->execute([$me['id'], $me['email'], $action, $target['id'] ?? null, $target['email'] ?? null,
-            $details ? json_encode($details, JSON_UNESCAPED_UNICODE) : null, date('Y-m-d H:i:s')]);
+            $details ? json_encode($details, JSON_UNESCAPED_UNICODE) : null, date('Y-m-d H:i:s'), clientTzOffset()]);
 }
 
 // ---- Roles, the staff list, the activity log ----
@@ -123,6 +123,7 @@ function handle_adminListActivity($pdo, $user) {
             'targetEmail' => $r['target_email'],
             'details' => $r['details'] !== null ? json_decode($r['details'], true) : null,
             'createdAt' => $r['created_at'],
+            'createdTz' => $r['created_tz'] ?? null,
         ];
     }
     respond(good(['items' => $items, 'hasMore' => ($offset + $limit) < $total, 'totalCount' => $total]));

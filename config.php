@@ -1,6 +1,13 @@
 <?php
 // config.php - Application Configuration
 
+// Every time the server writes or compares is UTC. Rows written before this
+// used the PHP time zone of the host (dev: America/Los_Angeles); migration11
+// converts them once, from the zone remembered here. LEGACY_TIMEZONE in
+// private/.env overrides it.
+$LEGACY_TIMEZONE = ini_get('date.timezone') ?: 'UTC';
+date_default_timezone_set('UTC');
+
 $CONFIG = [
     // Media upload limits (media.php). Adjust these to change what's
     // accepted without touching code.
@@ -101,6 +108,8 @@ if (getenv('EXPO_PUSH_URL')) $CONFIG['expo_push_url'] = getenv('EXPO_PUSH_URL');
 // Off by default (S10) -- was hard-coded true, which meant every request
 // logged emails, IPs, post snippets and session ids into api.log forever
 // (no rotation until S10 below), on every host including prod.
+$CONFIG['legacy_timezone'] = getenv('LEGACY_TIMEZONE') ?: $LEGACY_TIMEZONE;
+
 $CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN);
 
 // No docroot fallback: db() (schema.php) checks private/ actually exists

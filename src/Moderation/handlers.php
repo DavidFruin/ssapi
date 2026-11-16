@@ -92,9 +92,9 @@ function handle_reportContent($pdo, $user) {
 
     throttleSend($pdo, "report:$uid", 20, 86400, 'Too many reports today. Try again tomorrow.');
 
-    $ins = $pdo->prepare('INSERT OR IGNORE INTO reports (reporter_id, target_type, target_id, target_user_id, reason, details, snapshot, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
-    $ins->execute([$uid, $type, $targetId, $targetUserId, $reason, $details !== '' ? $details : null, $snapshot, date('Y-m-d H:i:s')]);
+    $ins = $pdo->prepare('INSERT OR IGNORE INTO reports (reporter_id, target_type, target_id, target_user_id, reason, details, snapshot, created_at, created_tz)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
+    $ins->execute([$uid, $type, $targetId, $targetUserId, $reason, $details !== '' ? $details : null, $snapshot, date('Y-m-d H:i:s'), clientTzOffset()]);
 
     if ($ins->rowCount() > 0) {
         $reportId = (int)$pdo->lastInsertId();
@@ -137,8 +137,8 @@ function handle_blockUser($pdo, $user) {
 
     $pdo->exec('BEGIN IMMEDIATE');
     try {
-        $pdo->prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?, ?, ?)')
-            ->execute([$uid, $targetId, date('Y-m-d H:i:s')]);
+        $pdo->prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at, created_tz) VALUES (?, ?, ?, ?)')
+            ->execute([$uid, $targetId, date('Y-m-d H:i:s'), clientTzOffset()]);
         $pdo->prepare('DELETE FROM follows WHERE (follower_id = ? AND followed_id = ?) OR (follower_id = ? AND followed_id = ?)')
             ->execute([$uid, $targetId, $targetId, $uid]);
         $pdo->prepare('DELETE FROM notifications WHERE (recipient_id = ? AND actor_id = ?) OR (recipient_id = ? AND actor_id = ?)')
@@ -161,7 +161,7 @@ function handle_unblockUser($pdo, $user) {
 
 // The people *I* blocked. Never who blocked me.
 function handle_getBlockedUsers($pdo, $user) {
-    $stmt = $pdo->prepare('SELECT b.blocked_id AS id, u.email, b.created_at FROM blocks b
+    $stmt = $pdo->prepare('SELECT b.blocked_id AS id, u.email, b.created_at, b.created_tz FROM blocks b
         JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ? ORDER BY b.created_at DESC');
     $stmt->execute([$user['sub']]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
@@ -249,6 +249,7 @@ function handle_adminListReports($pdo, $user) {
             'details' => $r['details'],
             'snapshot' => $r['snapshot'],
             'createdAt' => $r['created_at'],
+            'createdTz' => $r['created_tz'] ?? null,
             'status' => $r['status'],
             'reportCount' => (int)$r['open_count'],
             'resolvedAt' => $r['resolved_at'],

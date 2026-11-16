@@ -15,10 +15,10 @@
 function followList($pdo, $viewerId, $targetId, $side) {
     [$mine, $theirs] = $side === 'followers' ? ['followed_id', 'follower_id'] : ['follower_id', 'followed_id'];
     [$hf, $hp] = hiddenFilter($pdo, $viewerId, 'u.id');
-    $stmt = $pdo->prepare("SELECT u.id, u.email, f.created_at FROM follows f JOIN users u ON u.id = f.$theirs
+    $stmt = $pdo->prepare("SELECT u.id, u.email, f.created_at, f.created_tz FROM follows f JOIN users u ON u.id = f.$theirs
         WHERE f.$mine = ?$hf ORDER BY u.id");
     $stmt->execute(array_merge([$targetId], $hp));
-    return array_map(fn($r) => ['id' => (int)$r['id'], 'email' => $r['email'], 'timestamp' => $r['created_at'] ?? 'Unknown'],
+    return array_map(fn($r) => ['id' => (int)$r['id'], 'email' => $r['email'], 'timestamp' => $r['created_at'] ?? 'Unknown', 'timestampTz' => $r['created_tz']],
         $stmt->fetchAll(PDO::FETCH_ASSOC));
 }
 
@@ -48,8 +48,8 @@ function handle_followUser($pdo, $user) {
 
     // The primary key makes a second follow a no-op, so only a new follow
     // notifies.
-    $insert = $pdo->prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at) VALUES (?, ?, ?)');
-    $insert->execute([$uid, $targetId, date('Y-m-d H:i:s')]);
+    $insert = $pdo->prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
+    $insert->execute([$uid, $targetId, date('Y-m-d H:i:s'), clientTzOffset()]);
     if ($insert->rowCount() > 0) createNotification($pdo, $targetId, $uid, $user['email'], 'follow');
 
     respond(good(['following' => true]));

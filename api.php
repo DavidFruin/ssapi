@@ -234,11 +234,11 @@ function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $p
     if (isHiddenFrom($pdo, $recipientId, $actorId)) return;
     $now = date('Y-m-d H:i:s');
     if ($postId === null) {
-        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, created_at) VALUES (?, ?, ?, ?, ?)');
-        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $now]);
+        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, created_at, created_tz) VALUES (?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $now, clientTzOffset()]);
     } else {
-        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, post_id, comment_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
-        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $postId, $commentId, $now]);
+        $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, post_id, comment_id, created_at, created_tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt->execute([$recipientId, $actorId, $actorEmail, $type, $postId, $commentId, $now, clientTzOffset()]);
     }
 
     // Deferred (P2) rather than run inline: each device is a fresh ECDH key

@@ -53,8 +53,8 @@ function handle_createComment($pdo, $user) {
         }
     }
 
-    $stmt = $pdo->prepare('INSERT INTO comments (post_id, user_id, comment_text, created_at, parent_id) VALUES (?, ?, ?, ?, ?)');
-    $stmt->execute([$postId, $user['sub'], $text, date('Y-m-d H:i:s'), $parent ? $parentId : null]);
+    $stmt = $pdo->prepare('INSERT INTO comments (post_id, user_id, comment_text, created_at, parent_id, created_tz) VALUES (?, ?, ?, ?, ?, ?)');
+    $stmt->execute([$postId, $user['sub'], $text, date('Y-m-d H:i:s'), $parent ? $parentId : null, clientTzOffset()]);
     $commentId = (int)$pdo->lastInsertId();
 
     // One notification per person per comment, the most specific kind: a reply
@@ -121,7 +121,7 @@ function handle_getPostComments($pdo, $user) {
         // left out, frozen comments show only to their author, flagged.
         [$hf, $hp] = hiddenFilter($pdo, $viewer, 'c.user_id');
         [$ff, $fp] = frozenFilter('c', $viewer);
-        $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, c.frozen_at, c.parent_id, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? AND c.deleted_at IS NULL$hf$ff ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
+        $stmt = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text as text, c.created_at, c.created_tz, c.frozen_at, c.parent_id, u.email as user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.post_id = ? AND c.deleted_at IS NULL$hf$ff ORDER BY c.created_at DESC LIMIT ? OFFSET ?");
         $stmt->execute(array_merge([$postId], $hp, $fp, [$limit, $offset]));
         $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
         $mentions = hydrateMentionsBatch($pdo, array_column($comments, 'text'));
@@ -182,7 +182,7 @@ function handle_getPostComments($pdo, $user) {
     $details = [];
     if ($ids) {
         $ph = implode(',', array_fill(0, count($ids), '?'));
-        $q = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text AS text, c.created_at, c.parent_id, u.email AS user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.id IN ($ph)");
+        $q = $pdo->prepare("SELECT c.id, c.post_id, c.user_id, c.comment_text AS text, c.created_at, c.created_tz, c.parent_id, u.email AS user_email FROM comments c LEFT JOIN users u ON c.user_id = u.id WHERE c.id IN ($ph)");
         $q->execute($ids);
         foreach ($q->fetchAll(PDO::FETCH_ASSOC) as $r) $details[(int)$r['id']] = $r;
     }
@@ -198,6 +198,7 @@ function handle_getPostComments($pdo, $user) {
             'id' => (int)$r['id'], 'post_id' => $r['post_id'],
             'parent_id' => $r['parent_id'] !== null ? (int)$r['parent_id'] : null,
             'created_at' => $r['created_at'],
+            'created_tz' => $r['created_tz'],
         ];
         if ($row['state'] === 'deleted' || $row['state'] === 'frozen') {
             return $out + ['user_id' => 0, 'user_email' => '', 'text' => '', 'mentions' => [], 'reportedByMe' => false]
