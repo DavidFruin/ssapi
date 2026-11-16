@@ -4,6 +4,7 @@
 #   /app/                  frontend build, served at "/" via the rewrites below
 #   /media/                uploads (data only, never executable)
 #   /downloads/            static downloads (APK etc.)
+#   /aprender/             owner-only Spanish practice page + its api.php stub (repo aprender)
 Options -Indexes
 
 # Authorization header passthrough (mod_fcgid hosts; PHP-FPM hosts also need CGIPassAuth On in the vhost).
@@ -72,6 +73,10 @@ SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1
   # Served as they are.
   RewriteRule ^(api|media|index)\.php$ - [L]
   RewriteRule ^(media|downloads)/ - [L]
+  # Aprender (owner-only Spanish practice, repo DavidFruin/aprender): its own
+  # static page and api.php stub, not part of the frontend build.
+  RewriteRule ^aprender$ /aprender/ [R=301,L]
+  RewriteRule ^aprender/ - [L]
 
   # Already rewritten into the frontend folder (second pass).
   RewriteRule ^app/ - [L]
