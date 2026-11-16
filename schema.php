@@ -44,6 +44,13 @@ function db() {
         PDO::ATTR_TIMEOUT => 5,
     ]);
     $pdo->exec('PRAGMA busy_timeout = 5000');
+    // WAL: a write (a like, a comment, a session touch) no longer makes every
+    // reader wait. The mode is stored in the database file, so this does
+    // nothing after the first time; synchronous is per connection. WAL keeps
+    // two side files (userdata.db-wal, -shm) next to the database: back up
+    // with sqlite3's .backup, or copy all three files together.
+    $pdo->exec('PRAGMA journal_mode = WAL');
+    $pdo->exec('PRAGMA synchronous = NORMAL');
     ensureSchema($pdo);
     return $pdo;
 }
