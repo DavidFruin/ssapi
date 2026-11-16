@@ -455,7 +455,7 @@ function deletePostById($pdo, $postId) {
     // under a row that's still there.
     $filesToUnlink = [];
 
-    $pdo->beginTransaction();
+    $pdo->exec('BEGIN IMMEDIATE');
     try {
         $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$postId]);
         $pdo->prepare('DELETE FROM post_likes WHERE post_id = ?')->execute([$postId]);
@@ -479,9 +479,9 @@ function deletePostById($pdo, $postId) {
                 }
             }
         }
-        $pdo->commit();
+        $pdo->exec('COMMIT');
     } catch (Throwable $e) {
-        $pdo->rollBack();
+        $pdo->exec('ROLLBACK');
         throw $e;
     }
 

@@ -983,7 +983,7 @@ function handle_uploadMedia() {
     if ($used + $bytes > $CONFIG['media_max_user_bytes']) rejectOverQuota();
 
     $path = "/media/{$uid}/{$mediaType}/{$filename}";
-    $pdo->beginTransaction();
+    $pdo->exec('BEGIN IMMEDIATE');
     try {
         $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
         $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, "loop") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
@@ -997,9 +997,9 @@ function handle_uploadMedia() {
             }
             $moved[] = $to;
         }
-        $pdo->commit();
+        $pdo->exec('COMMIT');
     } catch (Throwable $e) {
-        $pdo->rollBack();
+        $pdo->exec('ROLLBACK');
         logMsg('uploadMedia ERROR: ' . $e->getMessage());
         bad('Could not save the upload on the server. Please try again.', 500);
     }

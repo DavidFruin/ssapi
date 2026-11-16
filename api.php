@@ -472,7 +472,7 @@ function deleteUserAndData($pdo, int $uid): void {
     // that already deleted cleanly, and vice versa.
     $filesToUnlink = [];
 
-    $pdo->beginTransaction();
+    $pdo->exec('BEGIN IMMEDIATE');
     try {
         $stmt = $pdo->prepare('SELECT id FROM posts WHERE user_id = ?');
         $stmt->execute([$uid]);
@@ -539,9 +539,9 @@ function deleteUserAndData($pdo, int $uid): void {
         $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
-        $pdo->commit();
+        $pdo->exec('COMMIT');
     } catch (Throwable $e) {
-        $pdo->rollBack();
+        $pdo->exec('ROLLBACK');
         throw $e;
     }
 

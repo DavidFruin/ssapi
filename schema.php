@@ -43,6 +43,7 @@ function db() {
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_TIMEOUT => 5,
     ]);
+    $pdo->setAttribute(PDO::ATTR_STATEMENT_CLASS, [BufferedStatement::class]);
     $pdo->exec('PRAGMA busy_timeout = 5000');
     // WAL: a write (a like, a comment, a session touch) no longer makes every
     // reader wait. The mode is stored in the database file, so this does
@@ -53,6 +54,80 @@ function db() {
     $pdo->exec('PRAGMA synchronous = NORMAL');
     ensureSchema($pdo);
     return $pdo;
+}
+
+// A statement that reads its whole result the first time anything is fetched
+// from it, then hands the rows out from memory.
+//
+// Why: PDO's SQLite driver keeps a read open on a statement until its last
+// row has been fetched or the statement is freed. When the same request then
+// writes while one of its own earlier SELECTs is still open, and another
+// request has written in between, SQLite refuses at once with "database is
+// locked"; the busy timeout doesn't cover that case. (Seen for real: seven
+// follows sent together, one answered with a server error.) With the result
+// read in one go, no read is ever left open behind a later write. Result sets
+// here are small: a page, one row, a list of ids.
+//
+// For the same reason a transaction that reads and then writes must start
+// with BEGIN IMMEDIATE, not beginTransaction(): it takes the write lock up
+// front, where the busy timeout does apply.
+class BufferedStatement extends PDOStatement {
+    private ?array $rows = null;   // numeric rows; null until first fetched
+    private array $names = [];
+    private int $next = 0;
+
+    protected function __construct() {}
+
+    public function execute(?array $params = null): bool {
+        $this->rows = null;
+        $this->next = 0;
+        return parent::execute($params);
+    }
+
+    private function load(): void {
+        if ($this->rows !== null) return;
+        $this->names = [];
+        for ($i = 0, $n = $this->columnCount(); $i < $n; $i++) $this->names[] = $this->getColumnMeta($i)['name'];
+        $this->rows = parent::fetchAll(PDO::FETCH_NUM);
+        parent::closeCursor();
+        $this->next = 0;
+    }
+
+    private function shape(array $row, int $mode, int $column = 0): mixed {
+        switch ($mode) {
+            case PDO::FETCH_DEFAULT:
+            case PDO::FETCH_ASSOC: return array_combine($this->names, $row);
+            case PDO::FETCH_NUM: return $row;
+            case PDO::FETCH_COLUMN: return $row[$column];
+        }
+        throw new LogicException("BufferedStatement: fetch mode $mode is not supported");
+    }
+
+    public function fetch(int $mode = PDO::FETCH_DEFAULT, int $cursorOrientation = PDO::FETCH_ORI_NEXT, int $cursorOffset = 0): mixed {
+        $this->load();
+        if (!isset($this->rows[$this->next])) return false;
+        return $this->shape($this->rows[$this->next++], $mode);
+    }
+
+    public function fetchColumn(int $column = 0): mixed {
+        $this->load();
+        if (!isset($this->rows[$this->next])) return false;
+        return $this->rows[$this->next++][$column];
+    }
+
+    public function fetchAll(int $mode = PDO::FETCH_DEFAULT, mixed ...$args): array {
+        $this->load();
+        $rest = array_slice($this->rows, $this->next);
+        $this->next = count($this->rows);
+        $column = $mode === PDO::FETCH_COLUMN ? (int)($args[0] ?? 0) : 0;
+        return array_map(fn($row) => $this->shape($row, $mode, $column), $rest);
+    }
+
+    public function closeCursor(): bool {
+        $this->rows = null;
+        $this->next = 0;
+        return parent::closeCursor();
+    }
 }
 
 // Maps a stored media URL path ("/media/<uid>/<type>/<file>") to its file

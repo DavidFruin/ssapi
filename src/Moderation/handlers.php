@@ -148,7 +148,7 @@ function handle_blockUser($pdo, $user) {
     $stmt->execute([$targetId]);
     if (!$stmt->fetchColumn()) bad('User not found', 404);
 
-    $pdo->beginTransaction();
+    $pdo->exec('BEGIN IMMEDIATE');
     try {
         $pdo->prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at) VALUES (?, ?, ?)')
             ->execute([$uid, $targetId, date('Y-m-d H:i:s')]);
@@ -156,9 +156,9 @@ function handle_blockUser($pdo, $user) {
         removeFollow($pdo, $targetId, $uid);
         $pdo->prepare('DELETE FROM notifications WHERE (recipient_id = ? AND actor_id = ?) OR (recipient_id = ? AND actor_id = ?)')
             ->execute([$uid, $targetId, $targetId, $uid]);
-        $pdo->commit();
+        $pdo->exec('COMMIT');
     } catch (Throwable $e) {
-        $pdo->rollBack();
+        $pdo->exec('ROLLBACK');
         throw $e;
     }
     respond(good(['blocked' => true]));
