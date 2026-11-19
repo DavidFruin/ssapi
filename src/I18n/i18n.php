@@ -35,8 +35,20 @@ function mailSubject(string $subject): string {
     return preg_match('/[^\x20-\x7E]/', $subject) ? '=?UTF-8?B?' . base64_encode($subject) . '?=' : $subject;
 }
 
+// Another site running this code for its accounts (aprender.davidfruin.com)
+// sets SITE_NAME and MAIL_FROM in its private/.env; unset, nothing changes.
+function siteName(): string {
+    return getenv('SITE_NAME') ?: 'Simple Social';
+}
+
+// A translated sentence that names the site, with this site's own name.
+function trSite(string $text, array $params = []): string {
+    return str_replace('Simple Social', siteName(), tr($text, $params));
+}
+
 function mailHeaders(string $body): string {
-    $headers = "From: no-reply@app.davidfruin.com\r\nReply-To: no-reply@app.davidfruin.com\r\n";
+    $from = getenv('MAIL_FROM') ?: 'no-reply@app.davidfruin.com';
+    $headers = "From: $from\r\nReply-To: $from\r\n";
     if (preg_match('/[^\x20-\x7E\r\n]/', $body)) {
         $headers .= "MIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\nContent-Transfer-Encoding: 8bit\r\n";
     }

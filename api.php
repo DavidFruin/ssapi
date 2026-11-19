@@ -598,6 +598,11 @@ $HANDLERS = [
     'log' => 'handle_log_request'
 ];
 
+// A site that serves only part of the API (aprender.davidfruin.com uses the
+// accounts and nothing else) defines SSAPI_ACTIONS before requiring this
+// file; every other action is then unknown there.
+if (defined('SSAPI_ACTIONS')) $HANDLERS = array_intersect_key($HANDLERS, array_flip(SSAPI_ACTIONS));
+
 if ($_SERVER['REQUEST_METHOD'] !== 'POST') bad('Method not allowed', 405);
 $action = $_POST['action'] ?? null;
 if (!$action) bad('Missing action', 400);

@@ -334,7 +334,7 @@ function handle_sendOTP($pdo) {
     $stmt = $pdo->prepare('UPDATE users SET reset_otp = ?, reset_expires = ? WHERE id = ?');
     $stmt->execute([otpCodeHash($row['email'], $otp), time() + 600, $row['id']]);
 
-    $subject = mailSubject(tr('Your Simple Social Password Reset OTP'));
+    $subject = mailSubject(trSite('Your Simple Social Password Reset OTP'));
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
     $to = $row['email'];
     defer(function () use ($to, $subject, $message) {
@@ -444,7 +444,7 @@ function handle_sendRegisterOTP($pdo) {
     $stmt = $pdo->prepare('INSERT INTO pending_users (email, password, otp, dateCreated, invite_code) VALUES (?, ?, ?, ?, ?)');
     $stmt->execute([$email, '', otpCodeHash($email, $otp), time(), $inviteCode]);
 
-    $subject = tr('Your Simple Social Registration OTP');
+    $subject = trSite('Your Simple Social Registration OTP');
     $message = tr('Your 6-digit OTP code is: {otp}', ['otp' => $otp]) . "\n\n" . tr('Valid for 10 minutes.') . "\n\n" . tr('If you did not request this, ignore this email.');
     $headers = mailHeaders($message);
 
