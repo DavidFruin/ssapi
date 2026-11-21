@@ -102,6 +102,16 @@ function registrationNeedsInvite(): bool {
     return strtolower(getenv('REGISTRATION_MODE') ?: 'invite') !== 'open';
 }
 
+// MAX_USERS in the site's .env caps how many accounts may exist (frozen ones
+// included); unset or 0 means no cap. Checked when a sign-up starts and again
+// just before the account is created.
+function requireRoomForNewUser($pdo): void {
+    $max = (int)(getenv('MAX_USERS') ?: 0);
+    if ($max <= 0) return;
+    $count = (int)$pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($count >= $max) bad('Sign-ups are closed: this site is full.', 403);
+}
+
 // The live code's row (with the inviter's email), or exits with the one
 // generic message. Rate-limited per IP: every wrong guess counts, and the
 // message never says whether the code was wrong, expired or used. Codes made

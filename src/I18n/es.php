@@ -48,6 +48,7 @@ return [
     'Password must contain a symbol' => 'La contraseña debe tener un símbolo',
     'Passwords do not match or are empty' => 'Las contraseñas no coinciden o están vacías',
     'Valid email required' => 'Se necesita un correo electrónico válido',
+    'Sign-ups are closed: this site is full.' => 'No se admiten más registros: el sitio está lleno.',
     'Email already registered' => 'Este correo ya está registrado',
     'Please wait a minute before requesting another code.' => 'Espera un minuto antes de pedir otro código.',
     'OTP sent to your email. Check inbox/spam.' => 'Te enviamos un código por correo. Revisa tu bandeja de entrada y el spam.',

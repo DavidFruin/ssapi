@@ -414,6 +414,7 @@ function handle_resetPassword($pdo) {
 function handle_sendRegisterOTP($pdo) {
     $email = trim($_POST['email'] ?? '');
     if (!$email || !filter_var($email, FILTER_VALIDATE_EMAIL)) bad('Valid email required', 400);
+    requireRoomForNewUser($pdo);
 
     // Invite-only: the code is checked first, before the send throttles and
     // before any email. It is only read here; nothing is spent until the
@@ -491,6 +492,7 @@ function handle_finishRegister($pdo) {
 
     $keys = finalStepKeys('register');
     checkAttemptLimit($pdo, $keys);
+    requireRoomForNewUser($pdo);
 
     $stmt = $pdo->prepare('SELECT otp, dateCreated, invite_code FROM pending_users WHERE email = ?');
     $stmt->execute([$email]);
