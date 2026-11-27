@@ -170,6 +170,23 @@ function jsonIdList($key, $max = 100, $ints = false) {
     return array_map('strval', $list);
 }
 
+// ============== NAMES ==============
+// A member's public name: their username once they have chosen one, until
+// then their email (Dave, 2026-11-27). Every answer that used to carry
+// another member's email under userEmail, user_email, actor_email, email or
+// emails now carries this, so old app builds show usernames with no update.
+// Staff pages and your own account still show the real email.
+function nameSql(string $alias): string {
+    return "COALESCE($alias.username, $alias.email)";
+}
+
+function displayNameOf($pdo, int $userId): ?string {
+    $s = $pdo->prepare('SELECT ' . nameSql('u') . ' FROM users u WHERE u.id = ?');
+    $s->execute([$userId]);
+    $name = $s->fetchColumn();
+    return $name === false ? null : $name;
+}
+
 // ============== VISIBILITY (blocks, frozen accounts) ==============
 // Users whose content the viewer must not see, and who must not interact
 // with the viewer: anyone the viewer blocked, anyone who blocked the viewer,
@@ -232,6 +249,9 @@ function isReportedBy($pdo, $viewerId, $type, $id) {
 function createNotification($pdo, $recipientId, $actorId, $actorEmail, $type, $postId = null, $commentId = null) {
     // Blocked either way, or a frozen actor: nothing is stored or pushed.
     if (isHiddenFrom($pdo, $recipientId, $actorId)) return;
+    // The stored name (shown if the actor's account is later deleted) and the
+    // push text use the public name, never the email the caller passed in.
+    $actorEmail = displayNameOf($pdo, (int)$actorId) ?? $actorEmail;
     $now = date('Y-m-d H:i:s');
     if ($postId === null) {
         $stmt = $pdo->prepare('INSERT INTO notifications (recipient_id, actor_id, actor_email, type, created_at, created_tz) VALUES (?, ?, ?, ?, ?, ?)');
@@ -411,7 +431,7 @@ function hydrateMentionsBatch($pdo, array $texts) {
     if ($all) {
         $ids = array_keys($all);
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");
+        $stmt = $pdo->prepare('SELECT u.id, ' . nameSql('u') . " AS email FROM users u WHERE u.id IN ($placeholders)");
         $stmt->execute($ids);
         foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
             $emails[(int)$row['id']] = $row['email'];
@@ -578,7 +598,7 @@ $HANDLERS = [
     'getPostPreviews' => 'handle_getPostPreviews',
     'checkInviteCode' => 'handle_checkInviteCode', 'dismissWelcome' => 'handle_dismissWelcome',
     'getMyInvites' => 'handle_getMyInvites', 'generateInviteCode' => 'handle_generateInviteCode', 'cancelInviteCode' => 'handle_cancelInviteCode',
-    'updateTheme' => 'handle_updateTheme', 'updateHand' => 'handle_updateHand', 'updateLanguage' => 'handle_updateLanguage',
+    'updateTheme' => 'handle_updateTheme', 'setUsername' => 'handle_setUsername', 'updateHand' => 'handle_updateHand', 'updateLanguage' => 'handle_updateLanguage',
     'getMediaLimits' => 'handle_getMediaLimits',
     'getVapidPublicKey' => 'handle_getVapidPublicKey',
     'savePushSubscription' => 'handle_savePushSubscription',

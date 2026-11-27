@@ -161,7 +161,7 @@ function handle_unblockUser($pdo, $user) {
 
 // The people *I* blocked. Never who blocked me.
 function handle_getBlockedUsers($pdo, $user) {
-    $stmt = $pdo->prepare('SELECT b.blocked_id AS id, u.email, b.created_at, b.created_tz FROM blocks b
+    $stmt = $pdo->prepare('SELECT b.blocked_id AS id, COALESCE(u.username, u.email) AS email, b.created_at, b.created_tz FROM blocks b
         JOIN users u ON u.id = b.blocked_id WHERE b.blocker_id = ? ORDER BY b.created_at DESC');
     $stmt->execute([$user['sub']]);
     $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);

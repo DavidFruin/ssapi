@@ -503,6 +503,10 @@ function handle_finishRegister($pdo) {
         bad('Verify your OTP before creating your account', 403);
     }
     validatePasswordRules($password);
+    // The web and phone sign-up always send a username. Older terminal builds
+    // don't; their members are asked for one the next time they open an app.
+    $username = trim((string)($_POST['username'] ?? ''));
+    if ($username !== '') requireUsableUsername($pdo, $username);
 
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $created_at = date('Y-m-d H:i:s');
@@ -512,6 +516,11 @@ function handle_finishRegister($pdo) {
         $s = $pdo->prepare('SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)');
         $s->execute([$email]);
         if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('Email already registered', 400); }
+        if ($username !== '') {
+            $s = $pdo->prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE');
+            $s->execute([$username]);
+            if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('That username is taken.', 409); }
+        }
 
         // The invite is spent here and only here, in the same transaction as
         // the new account, so two people finishing with one code can't both
@@ -536,8 +545,8 @@ function handle_finishRegister($pdo) {
         // Standard single-quoted SQL string literals, not SQLite's legacy
         // double-quoted-identifier-as-string fallback -- a build compiled
         // without that fallback would reject this INSERT outright.
-        $pdo->prepare("INSERT INTO users (email, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending, created_tz)
-            VALUES (?, ?, '[]', '[]', '[]', '', ?, ?, ?, ?)")->execute([$email, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0, clientTzOffset()]);
+        $pdo->prepare("INSERT INTO users (email, username, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending, created_tz)
+            VALUES (?, ?, ?, '[]', '[]', '[]', '', ?, ?, ?, ?)")->execute([$email, $username !== '' ? $username : null, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0, clientTzOffset()]);
         $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {

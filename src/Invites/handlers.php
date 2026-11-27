@@ -135,7 +135,7 @@ function requireRoomForNewUser($pdo): void {
 function requireValidInvite($pdo, string $raw): array {
     $keys = ['ip' => attemptKeys('invite', '-')['ip']];
     checkAttemptLimit($pdo, $keys);
-    $s = $pdo->prepare('SELECT i.code, i.created_by, i.expires_at, u.email AS inviter_email, u.role AS inviter_role
+    $s = $pdo->prepare('SELECT i.code, i.created_by, i.expires_at, COALESCE(u.username, u.email) AS inviter_email, u.role AS inviter_role
         FROM invite_codes i JOIN users u ON u.id = i.created_by AND u.frozen_at IS NULL WHERE i.code = ? AND i.expires_at > ?');
     $s->execute([trim($raw), date('Y-m-d H:i:s')]);
     $row = $s->fetch(PDO::FETCH_ASSOC);
@@ -157,7 +157,7 @@ function handle_checkInviteCode($pdo) {
 // inviter's account may be gone by now (inviterEmail then null: the apps show
 // a plain welcome). Shown only to the new member, in their own getMyInfo.
 function welcomeFor($pdo, int $userId): ?array {
-    $s = $pdo->prepare('SELECT u.welcome_pending, i.email AS inviter_email, i.role AS inviter_role
+    $s = $pdo->prepare('SELECT u.welcome_pending, COALESCE(i.username, i.email) AS inviter_email, i.role AS inviter_role
         FROM users u LEFT JOIN users i ON i.id = u.invited_by WHERE u.id = ?');
     $s->execute([$userId]);
     $row = $s->fetch(PDO::FETCH_ASSOC);

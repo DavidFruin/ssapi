@@ -27,6 +27,8 @@ return [
     // --- Auth ---
     'Missing credentials' => 'Faltan las credenciales',
     'Invalid email or password' => 'Correo o contraseña incorrectos',
+    'A username is 3 to 20 letters or underscores.' => 'Un nombre de usuario tiene de 3 a 20 letras o guiones bajos.',
+    'That username is taken.' => 'Ese nombre de usuario ya está en uso.',
     'Login successful' => 'Inicio de sesión correcto',
     'Logged out' => 'Sesión cerrada',
     'This account has been suspended. Contact {contact} if you think this is a mistake.' => 'Esta cuenta fue suspendida. Contacta a {contact} si crees que es un error.',

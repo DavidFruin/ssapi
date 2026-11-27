@@ -96,12 +96,15 @@ function handle_adminSetRole($pdo, $user) {
 function handle_getStaff($pdo, $user) {
     $me = userRole($pdo, (int)$user['sub']);
     $isStaff = $me && ROLE_RANK[$me['role']] >= ROLE_RANK['moderator'];
-    $stmt = $pdo->query("SELECT id, email, role, frozen_at FROM users
+    $stmt = $pdo->query("SELECT id, email, username, role, frozen_at FROM users
         WHERE role IN ('moderator', 'admin', 'owner')" . ($isStaff ? '' : ' AND frozen_at IS NULL') . "
         ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END, lower(email)");
     $staff = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
-        $row = ['userId' => (int)$r['id'], 'email' => $r['email'], 'role' => $r['role']];
+        // Staff see the email and the username; other members see the public
+        // name (username, else email) in the email key, like everywhere else.
+        $row = ['userId' => (int)$r['id'], 'email' => $isStaff ? $r['email'] : ($r['username'] ?? $r['email']), 'role' => $r['role']];
+        if ($isStaff) $row['username'] = $r['username'];
         if ($r['frozen_at'] !== null) $row['frozen'] = true;
         $staff[] = $row;
     }

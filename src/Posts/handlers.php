@@ -23,7 +23,7 @@
 
 const PREVIEW_MAX_CHARS = 25;
 
-// Swaps @[id] tokens for @email across a batch of texts, in one query for the
+// Swaps @[id] tokens for @name (username, else email) across a batch of texts, in one query for the
 // whole batch rather than one per text. Used where a mention has to survive as
 // plain readable text (post previews) instead of being linkified client-side.
 // An id with no user left behind reads as "@someone".
@@ -37,7 +37,7 @@ function resolveMentionTokens($pdo, $texts) {
 
     $ids = array_keys($ids);
     $placeholders = implode(',', array_fill(0, count($ids), '?'));
-    $stmt = $pdo->prepare("SELECT id, email FROM users WHERE id IN ($placeholders)");
+    $stmt = $pdo->prepare('SELECT u.id, ' . nameSql('u') . " AS email FROM users u WHERE u.id IN ($placeholders)");
     $stmt->execute($ids);
     $emails = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $row) {
@@ -189,7 +189,7 @@ function postRowsToApi($pdo, array $rows, $viewerId) {
     return $posts;
 }
 
-const POST_SELECT = 'SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.created_tz, posts.frozen_at, users.email, '
+const POST_SELECT = 'SELECT posts.id, posts.user_id, posts.text, posts.media_url, posts.created_at, posts.created_tz, posts.frozen_at, COALESCE(users.username, users.email) AS email, '
     . POST_MEDIA_COLUMNS . ' FROM posts LEFT JOIN users ON users.id = posts.user_id ' . POST_MEDIA_JOIN;
 
 function handle_getPostById($pdo, $user) {

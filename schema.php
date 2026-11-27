@@ -17,7 +17,7 @@
 // migration1() calls it below so a fresh database still gets the same
 // tables as everything else.
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 
 // The only place either entry point opens a database handle. Static, so a
 // single request (e.g. a media upload, which used to open three separate
@@ -168,6 +168,7 @@ function ensureSchema($pdo) {
         if ($v < 9) migration9($pdo);
         if ($v < 10) migration10($pdo);
         if ($v < 11) migration11($pdo);
+        if ($v < 12) migration12($pdo);
         $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
         $pdo->exec('COMMIT');
     } catch (Throwable $e) {
@@ -240,6 +241,15 @@ function migration11($pdo) {
         }
     }
     $pdo->exec('DROP TABLE ts_map');
+}
+
+// Usernames (Phase III, Dave 2026-11-20 and 2026-11-27): the name other
+// members see. NULL until the member chooses one (until then they see the
+// email). Letters and underscores, 3 to 20, unique ignoring case; the index
+// lets any number of members still have none.
+function migration12($pdo) {
+    addColumns($pdo, 'users', ['username' => 'TEXT']);
+    $pdo->exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username COLLATE NOCASE)');
 }
 
 // Follows as a table (review F2). They used to be a JSON list inside each
