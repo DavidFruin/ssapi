@@ -348,7 +348,8 @@ function migration7($pdo) {
 // Invites (access plan Step 1): each member can invite one person with a
 // short-lived code, the owner as many as they like. invite_codes holds only
 // live codes (used and expired ones are deleted). users.invited_by records
-// who invited whom and is NEVER returned by any API; users.role is 'owner'
+// who invited whom and is only returned to the inviter (getMyInvites' joined
+// list, 2026-11-27); users.role is 'owner'
 // for Dave (set by hand, see the plan's rollout); invite_used_at marks a
 // member whose one invite has been spent; welcome_pending is 1 from
 // registration until the new member dismisses their one-time welcome.

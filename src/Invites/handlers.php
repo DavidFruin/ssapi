@@ -4,7 +4,8 @@
 // can invite as many as they like. A code is 8 characters, valid for 7 days,
 // works once, and is only spent when someone completes registration with it.
 // Used and expired codes are deleted, so nothing is left to guess.
-// users.invited_by is never returned by any endpoint.
+// users.invited_by is only ever shown to the inviter: getMyInvites lists the
+// people who joined with your codes (Dave, 2026-11-27). Nobody else sees it.
 //
 // Depends on shared Core helpers still defined in api.php: bad(), good(),
 // respond(), and on the Auth module's attempt limiter (attemptKeys,
@@ -16,6 +17,11 @@ const INVITE_DIGITS = '23456789';                  // no 0, 1
 const INVITE_SYMBOLS = '!$&@?';
 const INVITE_LENGTH = 8;
 const INVITE_DAYS = 7;
+// Invite codes went live on app.davidfruin.com just after this (UTC). The
+// members who were already there were recorded as the owner's invitees by
+// hand at that rollout, without a code, so only accounts made since then
+// count as having joined with a code.
+const INVITE_CODES_BEGAN = '2026-10-09 02:00:00';
 
 // 8 characters with at least one of each class; symbols never first or last.
 function newInviteCode(): string {
@@ -60,7 +66,16 @@ function handle_getMyInvites($pdo, $user) {
         'canGenerate' => $unlimited || (!$used && !$codes),
         'used' => $used,
         'codes' => $codes,
+        'joined' => joinedWithMyCodes($pdo, (int)$user['sub']),
     ]));
+}
+
+// Who joined with this member's codes, newest first. A deleted account drops
+// off the list.
+function joinedWithMyCodes($pdo, int $userId): array {
+    $s = $pdo->prepare('SELECT email, created_at FROM users WHERE invited_by = ? AND created_at >= ? ORDER BY created_at DESC, id DESC');
+    $s->execute([$userId, INVITE_CODES_BEGAN]);
+    return array_map(fn($r) => ['email' => $r['email'], 'joinedAt' => $r['created_at']], $s->fetchAll(PDO::FETCH_ASSOC));
 }
 
 function handle_generateInviteCode($pdo, $user) {
