@@ -17,7 +17,9 @@ Tests live in [`sstests`](https://github.com/DavidFruin/sstests) (`backend/`), n
 
 ## Configuration
 
-This app reads its JWT secret and other runtime config from a `.env`-style file **outside** this repo (see `.env.example` for the shape). It also expects a SQLite database at a path outside the repo (see `config.php`/`schema.php`). Neither is committed here — see the deployment host's own setup for where those actually live.
+This app reads its JWT secret and other runtime config from a `.env`-style file **outside** this repo (see `.env.example` for the shape). It also needs a MariaDB database, named in that `.env` (`DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `DB_SOCKET` or `DB_HOST`); `schema.php` builds the tables the first time. Neither is committed here — see the deployment host's own setup for where those actually live.
+
+**From SQLite (before 2026-11-27 the database was `private/userdata.db`):** a site moves once, while it shows the maintenance page: make its MariaDB database and login, put them in its `.env`, deploy this code, then from the site's `ssapi/` folder run `php bin/sqlite-to-mariadb.php ../private/userdata.db`. It copies every table and checks every row (`CHECK OK`); `--check` repeats the check alone. The SQLite file must be at schema 12 (ssapi 3.0.0). Keep the file as the rollback. A site that still runs on SQLite (for example another site using this code for its accounts) must not get this version before it has moved.
 
 ## Deploying
 
@@ -25,7 +27,7 @@ Not yet automated. Each domain is laid out as three separate folders:
 
 ```
 <domain>/
-  private/        .env, userdata.db, logs/, tmp/   (unchanged)
+  private/        .env, logs/, tmp/, locks/   (unchanged; the data is in MariaDB)
   ssapi/          this repo's checkout (code only, never web-served)
   public_html/
     .htaccess     deploy/root.htaccess, deployed on purpose, never by an app deploy

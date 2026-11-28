@@ -225,8 +225,8 @@ function sessionLookup($pdo, $sessionId, $userId) {
 // Deliberately coarse. last_used_at only has to be good enough to order
 // sessions for the cap and to show "last active" in a device list, so it's
 // written at most once every few minutes rather than on every request -
-// otherwise every authenticated call would take a SQLite write lock, and
-// the feed alone fires several in parallel.
+// otherwise every authenticated call would write a row, and the feed alone
+// fires several in parallel.
 const SESSION_TOUCH_INTERVAL = 300;
 
 function sessionTouch($pdo, $session) {

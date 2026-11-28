@@ -3,7 +3,7 @@
 // admin < owner. Roles are public (every profile shows one) and are read from
 // the database on every request, so a change takes effect on the person's next
 // request with no new login. The server enforces every rule; the apps only
-// hide buttons people can't use. The owner is set by hand with sqlite3 and no
+// hide buttons people can't use. The owner is set by hand in the database and no
 // endpoint ever sets or removes it.
 //
 // Loaded via Composer's "files" autoload (see composer.json). Depends on

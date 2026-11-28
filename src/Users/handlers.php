@@ -30,7 +30,7 @@ function handle_getUsers($pdo, $user) {
     // users (blocked either way, or frozen) can't be found or tagged.
     [$hf, $hp] = hiddenFilter($pdo, $user['sub'], 'id');
     $name = nameSql('users');
-    $stmt = $pdo->prepare("SELECT id, $name AS email, created_at FROM users WHERE id != ?$hf ORDER BY $name COLLATE NOCASE ASC");
+    $stmt = $pdo->prepare("SELECT id, $name AS email, created_at FROM users WHERE id != ?$hf ORDER BY LOWER($name) ASC");
     $stmt->execute(array_merge([$user['sub']], $hp));
     respond(good(['users' => $stmt->fetchAll(PDO::FETCH_ASSOC)]));
 }
@@ -106,7 +106,7 @@ function handle_updateHand($pdo, $user) {
 // 2026-11-27). Stops the request with the reason when the name can't be used.
 function requireUsableUsername($pdo, string $name, int $exceptUserId = 0): void {
     if (!preg_match('/^[A-Za-z_]{3,20}$/', $name)) bad('A username is 3 to 20 letters or underscores.', 400);
-    $s = $pdo->prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE AND id != ?');
+    $s = $pdo->prepare('SELECT 1 FROM users WHERE username = ? AND id != ?');
     $s->execute([$name, $exceptUserId]);
     if ($s->fetchColumn()) bad('That username is taken.', 409);
 }

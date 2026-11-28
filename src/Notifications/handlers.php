@@ -89,9 +89,12 @@ function handle_getVapidPublicKey($pdo, $user) {
 // Keeps at most 10 push targets per user, newest first, so a misbehaving or
 // malicious client can't pile up an unbounded number of them.
 function capPushSubscriptions($pdo, $userId) {
-    $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND id NOT IN
-        (SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 10)')
-        ->execute([$userId, $userId]);
+    // Keeps the 10 newest. (MariaDB can't take LIMIT inside IN (...), so: find
+    // the 10th newest id, then remove the older ones.)
+    $s = $pdo->prepare('SELECT id FROM push_subscriptions WHERE user_id = ? ORDER BY id DESC LIMIT 1 OFFSET 9');
+    $s->execute([$userId]);
+    $tenth = $s->fetchColumn();
+    if ($tenth !== false) $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ? AND id < ?')->execute([$userId, $tenth]);
 }
 
 function handle_savePushSubscription($pdo, $user) {
@@ -104,7 +107,7 @@ function handle_savePushSubscription($pdo, $user) {
 
     // Recorded against the session that enabled it, so revoking a device
     // also silences its notifications.
-    $stmt = $pdo->prepare("INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, ?, ?, ?, ?, 'webpush')");
+    $stmt = $pdo->prepare("REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, ?, ?, ?, ?, 'webpush')");
     $stmt->execute([$user['sub'], $endpoint, $p256dh, $auth, date('Y-m-d H:i:s'), $user['sid'] ?? null]);
     capPushSubscriptions($pdo, $user['sub']);
 
@@ -131,7 +134,7 @@ function handle_saveExpoPushToken($pdo, $user) {
     $token = trim($_POST['token'] ?? '');
     if (!preg_match('/^ExponentPushToken\[[A-Za-z0-9_-]+\]$/', $token)) bad('Invalid push token', 400);
 
-    $stmt = $pdo->prepare("INSERT OR REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, '', '', ?, ?, 'expo')");
+    $stmt = $pdo->prepare("REPLACE INTO push_subscriptions (user_id, endpoint, p256dh, auth, created_at, session_id, kind) VALUES (?, ?, '', '', ?, ?, 'expo')");
     $stmt->execute([$user['sub'], $token, date('Y-m-d H:i:s'), $user['sid'] ?? null]);
     capPushSubscriptions($pdo, $user['sub']);
 

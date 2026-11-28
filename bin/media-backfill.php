@@ -66,7 +66,7 @@ if (in_array('--bytes', $modes, true)) {
     echo ($dryRun ? '[dry run] would fill' : 'filled') . " bytes on $filled row(s); $missing row(s) had no file.\n";
 
     $limit = $CONFIG['media_max_user_bytes'] ?? 1_073_741_824;
-    $over = $pdo->prepare('SELECT user_id, SUM(bytes) AS used FROM media GROUP BY user_id HAVING SUM(bytes) > ?');
+    $over = $pdo->prepare('SELECT user_id, CAST(SUM(bytes) AS SIGNED) AS used FROM media GROUP BY user_id HAVING SUM(bytes) > ?');
     $over->execute([$limit]);
     foreach ($over->fetchAll(PDO::FETCH_ASSOC) as $u) {
         echo "over the quota: user {$u['user_id']} uses " . round($u['used'] / 1048576) . " MB\n";

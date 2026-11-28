@@ -102,7 +102,7 @@ function checkAttemptLimit($pdo, $keys) {
 function recordFailedAttempt($pdo, $keys) {
     $now = time();
     $select = $pdo->prepare('SELECT failures, window_start FROM auth_attempts WHERE attempt_key = ?');
-    $save = $pdo->prepare('INSERT OR REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, ?)');
+    $save = $pdo->prepare('REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, ?)');
     $emailLocked = false;
     foreach ($keys as $type => $key) {
         $select->execute([$key]);
@@ -142,7 +142,7 @@ function throttleSend($pdo, $key, $limit, $window = ATTEMPT_WINDOW, $message = '
     $inWindow = $row && $now - $row['window_start'] < $window;
     $count = $inWindow ? $row['failures'] + 1 : 1;
     if ($count > $limit) bad($message, 429);
-    $pdo->prepare('INSERT OR REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, 0)')
+    $pdo->prepare('REPLACE INTO auth_attempts (attempt_key, failures, window_start, locked_until) VALUES (?, ?, ?, 0)')
         ->execute([$key, $count, $inWindow ? $row['window_start'] : $now]);
 }
 
@@ -511,15 +511,15 @@ function handle_finishRegister($pdo) {
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $created_at = date('Y-m-d H:i:s');
 
-    $pdo->exec('BEGIN IMMEDIATE');
+    beginWrite($pdo);
     try {
         $s = $pdo->prepare('SELECT 1 FROM users WHERE LOWER(email) = LOWER(?)');
         $s->execute([$email]);
-        if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('Email already registered', 400); }
+        if ($s->fetchColumn()) { rollbackWrite($pdo); bad('Email already registered', 400); }
         if ($username !== '') {
-            $s = $pdo->prepare('SELECT 1 FROM users WHERE username = ? COLLATE NOCASE');
+            $s = $pdo->prepare('SELECT 1 FROM users WHERE username = ?');
             $s->execute([$username]);
-            if ($s->fetchColumn()) { $pdo->exec('ROLLBACK'); bad('That username is taken.', 409); }
+            if ($s->fetchColumn()) { rollbackWrite($pdo); bad('That username is taken.', 409); }
         }
 
         // The invite is spent here and only here, in the same transaction as
@@ -534,7 +534,7 @@ function handle_finishRegister($pdo) {
             $s->execute([(string)($row['invite_code'] ?? ''), date('Y-m-d H:i:s')]);
             $inviterId = $s->fetchColumn();
             if ($inviterId === false) {
-                $pdo->exec('ROLLBACK');
+                rollbackWrite($pdo);
                 bad('That invite code has expired or was already used. Ask for a new one.', 400);
             }
             $inviterId = (int)$inviterId;
@@ -548,9 +548,9 @@ function handle_finishRegister($pdo) {
         $pdo->prepare("INSERT INTO users (email, username, password, posts, follows, followers, jwt, created_at, invited_by, welcome_pending, created_tz)
             VALUES (?, ?, ?, '[]', '[]', '[]', '', ?, ?, ?, ?)")->execute([$email, $username !== '' ? $username : null, $hashed, $created_at, $inviterId, $inviterId !== null ? 1 : 0, clientTzOffset()]);
         $pdo->prepare('DELETE FROM pending_users WHERE email = ?')->execute([$email]);
-        $pdo->exec('COMMIT');
+        commitWrite($pdo);
     } catch (Throwable $e) {
-        $pdo->exec('ROLLBACK');
+        rollbackWrite($pdo);
         throw $e;
     }
 

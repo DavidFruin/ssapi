@@ -149,9 +149,9 @@ function good($data = []) {
     return array_merge(['valid' => true], $data);
 }
 
-// Clamps limit/offset from $_POST. SQLite treats a negative LIMIT as "no
-// limit", so an unclamped value (e.g. limit=-1) could return every row
-// with everything hydrated in one call.
+// Clamps limit/offset from $_POST. An unclamped value (a huge or negative
+// limit) could ask for every row with everything hydrated in one call, or
+// fail as a 500.
 function pageParams($default = 25, $max = 50) {
     $limit = isset($_POST['limit']) ? (int)$_POST['limit'] : $default;
     $offset = isset($_POST['offset']) ? (int)$_POST['offset'] : 0;
@@ -160,7 +160,7 @@ function pageParams($default = 25, $max = 50) {
 
 // Decodes a JSON array of scalar ids from $_POST[$key], deduplicated and
 // capped at $max -- an uncapped list has no size limit and can also exceed
-// SQLite's bound-variable limit, which turns into a 500 instead of a 400.
+// the database's bound-variable limit, which turns into a 500 instead of a 400.
 function jsonIdList($key, $max = 100, $ints = false) {
     $list = json_decode($_POST[$key] ?? '[]', true);
     if (!is_array($list)) return [];
@@ -492,7 +492,7 @@ function deleteUserAndData($pdo, int $uid): void {
     // that already deleted cleanly, and vice versa.
     $filesToUnlink = [];
 
-    $pdo->exec('BEGIN IMMEDIATE');
+    beginWrite($pdo);
     try {
         $stmt = $pdo->prepare('SELECT id FROM posts WHERE user_id = ?');
         $stmt->execute([$uid]);
@@ -550,9 +550,9 @@ function deleteUserAndData($pdo, int $uid): void {
         $pdo->prepare('DELETE FROM sessions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM push_subscriptions WHERE user_id = ?')->execute([$uid]);
         $pdo->prepare('DELETE FROM users WHERE id = ?')->execute([$uid]);
-        $pdo->exec('COMMIT');
+        commitWrite($pdo);
     } catch (Throwable $e) {
-        $pdo->exec('ROLLBACK');
+        rollbackWrite($pdo);
         throw $e;
     }
 

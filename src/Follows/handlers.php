@@ -48,7 +48,7 @@ function handle_followUser($pdo, $user) {
 
     // The primary key makes a second follow a no-op, so only a new follow
     // notifies.
-    $insert = $pdo->prepare('INSERT OR IGNORE INTO follows (follower_id, followed_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
+    $insert = $pdo->prepare('INSERT IGNORE INTO follows (follower_id, followed_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
     $insert->execute([$uid, $targetId, date('Y-m-d H:i:s'), clientTzOffset()]);
     if ($insert->rowCount() > 0) createNotification($pdo, $targetId, $uid, $user['email'], 'follow');
 

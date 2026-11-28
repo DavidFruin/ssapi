@@ -80,7 +80,7 @@ function handle_getMediaLimits($pdo, $user) {
 // Total stored bytes for a user. Rows from before the bytes column (NULL)
 // count as 0 until bin/media-backfill.php --bytes fills them.
 function mediaBytesUsed($pdo, $userId) {
-    $s = $pdo->prepare('SELECT COALESCE(SUM(bytes), 0) FROM media WHERE user_id = ?');
+    $s = $pdo->prepare('SELECT CAST(COALESCE(SUM(bytes), 0) AS SIGNED) FROM media WHERE user_id = ?');
     $s->execute([$userId]);
     return (int)$s->fetchColumn();
 }
@@ -385,7 +385,7 @@ function mediaCapabilities() {
     global $CONFIG;
     static $caps = null;
     if ($caps !== null) return $caps;
-    $cacheFile = dirname($CONFIG['db_path']) . '/tmp/media-capabilities.json';
+    $cacheFile = $CONFIG['private_dir'] . '/tmp/media-capabilities.json';
     $cached = @json_decode((string)@file_get_contents($cacheFile), true);
     if (is_array($cached) && ($cached['checkedAt'] ?? 0) > time() - 3600 && ($cached['ffmpeg'] ?? '') === FFMPEG) {
         return $caps = $cached;
@@ -443,7 +443,7 @@ function resourcePrefix($seconds) {
 // until the request ends (or fclose), or null if every slot stayed busy.
 function acquireMediaSlot(int $waitSeconds = 20) {
     global $CONFIG;
-    $dir = dirname($CONFIG['db_path']) . '/locks';
+    $dir = $CONFIG['private_dir'] . '/locks';
     if (!is_dir($dir)) @mkdir($dir, 0700, true);
     $deadline = time() + $waitSeconds;
     do {
@@ -900,7 +900,7 @@ function handle_uploadMedia() {
     // Staged outside the docroot, never under a web-served media/ path --
     // the whole point of sniffing above is that this file isn't trustworthy
     // yet, and it sits here while ffprobe/ffmpeg run (up to minutes).
-    $stageDir = dirname($CONFIG['db_path']) . '/tmp';
+    $stageDir = $CONFIG['private_dir'] . '/tmp';
     if (!is_dir($stageDir)) mkdir($stageDir, 0700, true);
     // in_ prefix: the converted output is staged as <base>.webp in the same
     // folder, and an uploaded WebP must not share its name (deleting the
@@ -983,10 +983,10 @@ function handle_uploadMedia() {
     if ($used + $bytes > $CONFIG['media_max_user_bytes']) rejectOverQuota();
 
     $path = "/media/{$uid}/{$mediaType}/{$filename}";
-    $pdo->exec('BEGIN IMMEDIATE');
+    beginWrite($pdo);
     try {
         $posterPath = isset($moves[$stagedThumb]) ? "/media/{$uid}/video/thumb_{$base}.webp" : null;
-        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, "loop", created_tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
+        $stmt = $pdo->prepare('INSERT INTO media (user_id, filename, type, path, created_at, width, height, duration, bytes, poster_path, variant_path, `loop`, created_tz) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)');
         $stmt->execute([$uid, $filename, $mediaType, $path, date('Y-m-d H:i:s'), $info['width'], $info['height'], $info['duration'], $bytes, $posterPath, $variantPath, empty($classified['loop']) ? 0 : 1, clientTzOffset()]);
         $mediaId = $pdo->lastInsertId();
         $moved = [];
@@ -997,9 +997,9 @@ function handle_uploadMedia() {
             }
             $moved[] = $to;
         }
-        $pdo->exec('COMMIT');
+        commitWrite($pdo);
     } catch (Throwable $e) {
-        $pdo->exec('ROLLBACK');
+        rollbackWrite($pdo);
         logMsg('uploadMedia ERROR: ' . $e->getMessage());
         bad('Could not save the upload on the server. Please try again.', 500);
     }

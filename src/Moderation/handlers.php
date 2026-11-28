@@ -92,7 +92,7 @@ function handle_reportContent($pdo, $user) {
 
     throttleSend($pdo, "report:$uid", 20, 86400, 'Too many reports today. Try again tomorrow.');
 
-    $ins = $pdo->prepare('INSERT OR IGNORE INTO reports (reporter_id, target_type, target_id, target_user_id, reason, details, snapshot, created_at, created_tz)
+    $ins = $pdo->prepare('INSERT IGNORE INTO reports (reporter_id, target_type, target_id, target_user_id, reason, details, snapshot, created_at, created_tz)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)');
     $ins->execute([$uid, $type, $targetId, $targetUserId, $reason, $details !== '' ? $details : null, $snapshot, date('Y-m-d H:i:s'), clientTzOffset()]);
 
@@ -135,17 +135,17 @@ function handle_blockUser($pdo, $user) {
     $stmt->execute([$targetId]);
     if (!$stmt->fetchColumn()) bad('User not found', 404);
 
-    $pdo->exec('BEGIN IMMEDIATE');
+    beginWrite($pdo);
     try {
-        $pdo->prepare('INSERT OR IGNORE INTO blocks (blocker_id, blocked_id, created_at, created_tz) VALUES (?, ?, ?, ?)')
+        $pdo->prepare('INSERT IGNORE INTO blocks (blocker_id, blocked_id, created_at, created_tz) VALUES (?, ?, ?, ?)')
             ->execute([$uid, $targetId, date('Y-m-d H:i:s'), clientTzOffset()]);
         $pdo->prepare('DELETE FROM follows WHERE (follower_id = ? AND followed_id = ?) OR (follower_id = ? AND followed_id = ?)')
             ->execute([$uid, $targetId, $targetId, $uid]);
         $pdo->prepare('DELETE FROM notifications WHERE (recipient_id = ? AND actor_id = ?) OR (recipient_id = ? AND actor_id = ?)')
             ->execute([$uid, $targetId, $targetId, $uid]);
-        $pdo->exec('COMMIT');
+        commitWrite($pdo);
     } catch (Throwable $e) {
-        $pdo->exec('ROLLBACK');
+        rollbackWrite($pdo);
         throw $e;
     }
     respond(good(['blocked' => true]));
@@ -218,11 +218,11 @@ function handle_adminListReports($pdo, $user) {
             (SELECT COUNT(*) FROM reports o WHERE o.target_type = r.target_type AND o.target_id = r.target_id AND o.status = 'open') AS open_count,
             CASE r.target_type
                 WHEN 'post' THEN EXISTS (SELECT 1 FROM posts p WHERE p.id = r.target_id)
-                WHEN 'comment' THEN EXISTS (SELECT 1 FROM comments c WHERE c.id = CAST(r.target_id AS INTEGER))
-                ELSE EXISTS (SELECT 1 FROM users u WHERE u.id = CAST(r.target_id AS INTEGER)) END AS target_exists,
+                WHEN 'comment' THEN EXISTS (SELECT 1 FROM comments c WHERE c.id = CAST(r.target_id AS SIGNED))
+                ELSE EXISTS (SELECT 1 FROM users u WHERE u.id = CAST(r.target_id AS SIGNED)) END AS target_exists,
             CASE r.target_type
                 WHEN 'post' THEN (SELECT p.frozen_at FROM posts p WHERE p.id = r.target_id)
-                WHEN 'comment' THEN (SELECT c.frozen_at FROM comments c WHERE c.id = CAST(r.target_id AS INTEGER))
+                WHEN 'comment' THEN (SELECT c.frozen_at FROM comments c WHERE c.id = CAST(r.target_id AS SIGNED))
                 ELSE NULL END AS content_frozen_at
         FROM reports r
         LEFT JOIN users rep ON rep.id = r.reporter_id
@@ -372,7 +372,7 @@ function handle_adminListFrozen($pdo, $user) {
     $me = requireRole($pdo, $user, 'moderator');
     [$limit, $offset] = pageParams();
     $below = rolesBelowSql($me);
-    $union = "SELECT 'user' AS type, CAST(u.id AS TEXT) AS id, u.id AS user_id, u.email AS email, NULL AS text, NULL AS media_url,
+    $union = "SELECT 'user' AS type, CAST(u.id AS CHAR) AS id, u.id AS user_id, u.email AS email, NULL AS text, NULL AS media_url,
             u.frozen_at AS frozen_at, NULL AS frozen_by_email
         FROM users u WHERE u.frozen_at IS NOT NULL AND u.role IN ($below)
       UNION ALL
@@ -380,11 +380,11 @@ function handle_adminListFrozen($pdo, $user) {
         FROM posts p JOIN users u ON u.id = p.user_id LEFT JOIN users fb ON fb.id = p.frozen_by
         WHERE p.frozen_at IS NOT NULL AND u.role IN ($below)
       UNION ALL
-        SELECT 'comment', CAST(c.id AS TEXT), c.user_id, u.email, c.comment_text, NULL, c.frozen_at, fb.email
+        SELECT 'comment', CAST(c.id AS CHAR), c.user_id, u.email, c.comment_text, NULL, c.frozen_at, fb.email
         FROM comments c JOIN users u ON u.id = c.user_id LEFT JOIN users fb ON fb.id = c.frozen_by
         WHERE c.frozen_at IS NOT NULL AND u.role IN ($below)";
-    $total = (int)$pdo->query("SELECT COUNT(*) FROM ($union)")->fetchColumn();
-    $stmt = $pdo->prepare("SELECT * FROM ($union) ORDER BY frozen_at DESC, type, id LIMIT ? OFFSET ?");
+    $total = (int)$pdo->query("SELECT COUNT(*) FROM ($union) AS f")->fetchColumn();
+    $stmt = $pdo->prepare("SELECT * FROM ($union) AS f ORDER BY frozen_at DESC, type, id LIMIT ? OFFSET ?");
     $stmt->execute([$limit, $offset]);
     $items = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {

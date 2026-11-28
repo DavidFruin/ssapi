@@ -112,10 +112,20 @@ $CONFIG['legacy_timezone'] = getenv('LEGACY_TIMEZONE') ?: $LEGACY_TIMEZONE;
 
 $CONFIG['debug'] = filter_var(getenv('APP_DEBUG') ?: 'false', FILTER_VALIDATE_BOOLEAN);
 
-// No docroot fallback: db() (schema.php) checks private/ actually exists
-// before ever opening a connection and fails closed (500) if it doesn't,
-// rather than quietly creating userdata.db where it's web-reachable.
-$CONFIG['db_path'] = $privateDir . '/userdata.db';
+// The MariaDB database (schema.php db()), from private/.env: DB_NAME,
+// DB_USER, DB_PASSWORD, and either DB_SOCKET (a local socket path) or
+// DB_HOST (and DB_PORT). db() fails closed (500) when they are missing.
+$CONFIG['db'] = [
+    'name' => getenv('DB_NAME') ?: '',
+    'user' => getenv('DB_USER') ?: '',
+    'password' => getenv('DB_PASSWORD') ?: '',
+    'socket' => getenv('DB_SOCKET') ?: '',
+    'host' => getenv('DB_HOST') ?: 'localhost',
+    'port' => getenv('DB_PORT') ?: '',
+];
+// private/ (never the docroot) holds the logs, the upload work folders and
+// the conversion locks.
+$CONFIG['private_dir'] = $privateDir;
 $CONFIG['log_dir'] = $privateDir . '/logs';
 
 // Word filter list (Step 1C.2): one word or phrase per line, edited by hand on

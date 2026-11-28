@@ -120,7 +120,7 @@ function likeInfoForPostIds($pdo, $postIds, $viewerId) {
 // Columns to select (with POST_MEDIA_JOIN) so postRowToApi can describe the
 // attached media. Prefixed m_ so they can't clash with the posts columns.
 const POST_MEDIA_COLUMNS = 'm.type AS m_type, m.width AS m_width, m.height AS m_height, m.duration AS m_duration,
-    m.variant_path AS m_variant, m.poster_path AS m_poster, m."loop" AS m_loop';
+    m.variant_path AS m_variant, m.poster_path AS m_poster, m.`loop` AS m_loop';
 const POST_MEDIA_JOIN = 'LEFT JOIN media m ON m.path = posts.media_url';
 
 // The post's attached media for clients: type, full-size url, stored size,
@@ -276,10 +276,8 @@ function handle_post($pdo, $user) {
     while (true) {
         $postId = $uid . '.' . $newTime;
         try {
-            // Re-prepared each attempt: PDO/SQLite leaves a statement in a
-            // "General error: 21 bad parameter or other API misuse" state
-            // after a constraint violation, so re-executing the same
-            // PDOStatement on the next loop fails even with fresh values.
+            // Re-prepared each attempt (PDO/SQLite left a statement unusable
+            // after a constraint violation; harmless to keep on MariaDB).
             $insert = $pdo->prepare('INSERT INTO posts (id, user_id, text, media_url, created_at, created_tz) VALUES (?, ?, ?, ?, ?, ?)');
             $insert->execute([$postId, $uid, $text, $rawMedia, $createdAt, clientTzOffset()]);
             break;
@@ -385,7 +383,7 @@ function handle_likePost($pdo, $user) {
 
     $actorEmail = $user['email'];
 
-    $insert = $pdo->prepare('INSERT OR IGNORE INTO post_likes (post_id, user_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
+    $insert = $pdo->prepare('INSERT IGNORE INTO post_likes (post_id, user_id, created_at, created_tz) VALUES (?, ?, ?, ?)');
     $insert->execute([$postId, $user['sub'], date('Y-m-d H:i:s'), clientTzOffset()]);
     if ($insert->rowCount() > 0) {
         createNotification($pdo, $realOwnerId, $user['sub'], $actorEmail, 'like', $postId);
@@ -460,7 +458,7 @@ function deletePostById($pdo, $postId) {
     // under a row that's still there.
     $filesToUnlink = [];
 
-    $pdo->exec('BEGIN IMMEDIATE');
+    beginWrite($pdo);
     try {
         $pdo->prepare('DELETE FROM posts WHERE id = ?')->execute([$postId]);
         $pdo->prepare('DELETE FROM post_likes WHERE post_id = ?')->execute([$postId]);
@@ -484,9 +482,9 @@ function deletePostById($pdo, $postId) {
                 }
             }
         }
-        $pdo->exec('COMMIT');
+        commitWrite($pdo);
     } catch (Throwable $e) {
-        $pdo->exec('ROLLBACK');
+        rollbackWrite($pdo);
         throw $e;
     }
 
